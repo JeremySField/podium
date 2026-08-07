@@ -29,7 +29,7 @@ Podium is a purpose-built, GPU-accelerated native desktop workspace for a solo b
 
 **Status:** Phase 0 complete — Phase 1 not yet started
 **Next step:** Phase 1 — dark theme, panel layout, project switcher
-**Read gpui-component docs before writing any Phase 1 UI code**
+**Read phase_1/_phase_1_primer.md before starting Phase 1**
 
 ---
 
@@ -47,6 +47,7 @@ Podium is the room. Fixed. Permanent. Projects load into the room — the room d
 | `specs/_concept.md` | Every session — full architecture Rev 2.0 |
 | `decisions/_adr.md` | Any session touching architectural decisions |
 | `sessions/_session_log.md` | Every session — current status and priorities |
+| `phase_1/_phase_1_primer.md` | All Phase 1 sessions — load alongside this file |
 
 ---
 
