@@ -21,9 +21,10 @@ Replace the Hello World green screen with the actual Podium shell — dark theme
 
 **Phase 1 is complete when:**
 - Window opens with dark theme applied
-- TitleBar visible at top with Podium name and project switcher placeholder
-- Panel layout visible — at minimum a left sidebar area and main content area
-- Tab bar visible with placeholder tabs (Files, Agents, MemPalace, Review, Terminal, Health)
+- TitleBar visible at top with Podium name and project switcher (Combobox)
+- Application menu accessible from TitleBar
+- Tab bar visible: Files | Agents | Knowledge | Review | Terminal | Health
+- Main content area visible (empty for Phase 1)
 - StatusBar visible at bottom
 - Everything static — no data, no interactions required yet
 - `cargo run` opens cleanly, no errors
@@ -79,7 +80,7 @@ gpui_platform::application()
 
 gpui-component has 20+ built-in themes. Dark mode is not automatic — it must be set. The theme system uses `ThemeRegistry` to load themes from a `./themes` directory, or themes can be set programmatically.
 
-**Questions to resolve:**
+**Questions to resolve at session start:**
 - Does gpui-component ship a dark theme that can be set without a themes directory?
 - Is there a built-in dark theme name that can be loaded from the registry without copying theme files?
 - What is the simplest way to set dark mode for Phase 1?
@@ -90,18 +91,16 @@ gpui-component has 20+ built-in themes. Dark mode is not automatic — it must b
 ### 4. TitleBar Component — Windows-Specific Behavior
 
 gpui-component has a `TitleBar` component. On Windows, native title bars behave differently than macOS. Need to confirm:
-- Does TitleBar support custom content on Windows (project switcher placement)?
+- Does TitleBar support custom content on Windows (Combobox project switcher placement)?
 - Does it handle window dragging correctly on Windows?
-- Is a custom title bar needed or does the component handle this?
 
 **Source:** https://longbridge.github.io/gpui-component/docs/components/title-bar
 
 ### 5. Resizable Panel Layout
 
 gpui-component has a `Resizable` component for panel layouts. Need to understand:
-- How is a basic two-panel layout (sidebar left, main content right) structured?
+- How is a basic layout (main content area) structured?
 - How are initial panel sizes set?
-- Is there a minimum panel size constraint?
 
 **Source:** https://longbridge.github.io/gpui-component/docs/components/resizable
 
@@ -110,9 +109,22 @@ gpui-component has a `Resizable` component for panel layouts. Need to understand
 Tabs is a stateful component. Need to confirm:
 - How is the active tab state held in the view struct?
 - How does tab switching trigger content area re-render?
-- Can tab labels be set with icons?
 
 **Source:** https://longbridge.github.io/gpui-component/docs/components/tabs
+
+---
+
+## Locked Design Decisions for Phase 1
+
+| Decision | Value |
+|----------|-------|
+| Project switcher component | Combobox (searchable, Zed-style) |
+| Tab bar | Files \| Agents \| Knowledge \| Review \| Terminal \| Health |
+| Settings location | Application menu — NOT a tab |
+| Theme | Dark — always, no toggle |
+| Visual style | Minimal, text-focused, no color noise |
+| StatusBar | Bottom of window |
+| TitleBar | Top of window with Podium name + project switcher |
 
 ---
 
@@ -129,7 +141,9 @@ Tabs is a stateful component. Need to confirm:
 | Tabs | https://longbridge.github.io/gpui-component/docs/components/tabs |
 | Sidebar | https://longbridge.github.io/gpui-component/docs/components/sidebar |
 | StatusBar | https://longbridge.github.io/gpui-component/docs/components/status-bar |
+| Combobox | https://longbridge.github.io/gpui-component/docs/components/combobox |
 | LLM-optimized full docs | https://longbridge.github.io/gpui-component/llms-full.txt |
+| Local reference copy | vault/phase_1/gpui-component-docs.md |
 | gpui-component examples | https://github.com/longbridge/gpui-component/tree/main/examples |
 | API reference | https://docs.rs/gpui-component |
 
@@ -139,16 +153,15 @@ Tabs is a stateful component. Need to confirm:
 
 ```
 ┌─────────────────────────────────────────────────────┐
-│  TitleBar — [Podium] [Project Switcher ▼]           │
+│  TitleBar — [≡ Menu] [Podium] [Project Switcher ▼]  │
 ├─────────────────────────────────────────────────────┤
-│  [Files] [Agents] [MemPalace] [Review] [Terminal] [Health] │  ← Tabs
-├──────────┬──────────────────────────────────────────┤
-│          │                                          │
-│ Sidebar  │  Main Content Area                       │
-│ (future) │  (empty for Phase 1)                     │
-│          │                                          │
-│          │                                          │
-│          │                                          │
+│  Files | Agents | Knowledge | Review | Terminal | Health │
+├─────────────────────────────────────────────────────┤
+│                                                     │
+│  Main Content Area                                  │
+│  (empty for Phase 1)                                │
+│                                                     │
+│                                                     │
 ├─────────────────────────────────────────────────────┤
 │  StatusBar — branch / status indicators             │
 └─────────────────────────────────────────────────────┘
@@ -156,40 +169,20 @@ Tabs is a stateful component. Need to confirm:
 
 ---
 
-## Questions Requiring Design Decisions Before Code
-
-**Q1: Where does the project switcher live?**
-Options:
-- In the TitleBar (most compact, like VS Code's workspace selector)
-- As a top element above the tab bar
-- In a left sidebar panel
-
-Recommendation: TitleBar. Keeps the tab bar clean and matches the concept doc — project switcher always visible regardless of active tab.
-
-**Q2: Where do the tabs live — above or below the TitleBar?**
-Standard is below the TitleBar, above the content area. Confirm this is the intended layout before building.
-
-**Q3: Does the sidebar have content in Phase 1?**
-The sidebar is referenced in the concept doc but no panel requires a left sidebar in Phase 1. Recommendation: omit the sidebar for Phase 1, add in a later phase when Files or Agents panel needs it. Keep Phase 1 scope minimal.
-
-**Q4: What dark theme name to use?**
-Need to check available built-in theme names in the gpui-component themes directory before the session. Likely candidates: any theme with "dark" in the name, or "One Dark", "Nord", etc.
-
----
-
 ## main.rs Rewrite Scope for Phase 1
 
-The entire `main.rs` needs to be rewritten — it's currently a hello world placeholder. Phase 1 replaces it with:
+The entire `main.rs` needs to be rewritten — it is currently a hello world placeholder. Phase 1 replaces it with:
 
 1. `PodiumApp` struct — the root view
-2. `Root` wrapping `PodiumApp` in the window
-3. Assets registered on application
+2. Assets registered on application with `.with_assets()`
+3. `Root` wrapping `PodiumApp` in the window
 4. Dark theme applied
-5. TitleBar rendered
-6. Tabs rendered below TitleBar
-7. Content area (empty div for now)
-8. StatusBar at bottom
-9. Dialog, sheet, notification layers in render method
+5. TitleBar with Podium name and Combobox project switcher placeholder
+6. Application menu placeholder
+7. Tab bar — Files, Agents, Knowledge, Review, Terminal, Health
+8. Main content area (empty div for now)
+9. StatusBar at bottom
+10. Dialog, sheet, notification layers in render method
 
 ---
 
@@ -200,20 +193,21 @@ Before writing any Phase 1 code, read these docs in order:
 - [ ] Root view — https://longbridge.github.io/gpui-component/docs/root
 - [ ] TitleBar — https://longbridge.github.io/gpui-component/docs/components/title-bar
 - [ ] Tabs — https://longbridge.github.io/gpui-component/docs/components/tabs
-- [ ] Resizable — https://longbridge.github.io/gpui-component/docs/components/resizable
+- [ ] Combobox — https://longbridge.github.io/gpui-component/docs/components/combobox
 - [ ] StatusBar — https://longbridge.github.io/gpui-component/docs/components/status-bar
 - [ ] Theme — https://longbridge.github.io/gpui-component/docs/theme
 - [ ] Confirm dark theme name from themes directory
-- [ ] Answer the 4 design questions above
+- [ ] Check gpui-component examples for TitleBar + Tabs patterns
 
 ---
 
 ## Known Issues Entering Phase 1
 
-- Current `main.rs` missing `Root` wrapper — must fix before any gpui-component features will work correctly
-- Current `main.rs` missing `.with_assets()` — must fix before icons will work
+- Current `main.rs` missing `Root` wrapper — must fix before any gpui-component features work correctly
+- Current `main.rs` missing `.with_assets()` — must fix before icons work
 - Zed right-click context menu not working on Windows — check for Zed update before session
 
 ---
 
-*Phase 1 Primer — 2026-08-07 — Load alongside _primer.md at Phase 1 session start*
+*Phase 1 Primer — updated 2026-08-07*
+*Load alongside _primer.md at Phase 1 session start*
