@@ -264,3 +264,15 @@ This Podium ADR is the append-only record of all architectural decisions made fo
 **Impact on build phases:** Terminal moves to Phase 3 minimum. It is not a quick lift — it requires an independent implementation. Phases 1 and 2 are unaffected.
 
 **Supersedes:** ADR-012 (Zed terminal component)
+
+---
+
+## ADR-027 — Dock owns panel position persistence, panels are storage-agnostic
+**Date:** 2026-08-08
+**Status:** Accepted
+
+**Decision:** Panel position persistence is owned by the dock layer, not by individual panels. The dock maintains a record of each panel's current position (left, bottom, right) and persists it to `projects.toml` or a Podium-level config. On load, the dock reads the persisted positions and calls `set_position()` on each panel. Panels respond to `set_position()` but have no knowledge of config file format or storage mechanism.
+
+**Rationale:** Panels should not need to know how or where their position is stored. Centralizing persistence in the dock keeps the `PodiumPanel` trait storage-agnostic and makes the config structure predictable — one place manages all panel layout state. This is consistent with the Zed pattern where `SettingsStore` drives position changes and the dock responds, rather than panels reaching into storage themselves.
+
+**Applies to:** `PodiumPanel` trait design and dock implementation (Phase 1).
