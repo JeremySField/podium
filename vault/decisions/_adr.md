@@ -95,7 +95,7 @@ This Podium ADR is the append-only record of all architectural decisions made fo
 
 **Rationale:** All compute on one workstation with OCuLink to inference node makes network-protocol overhead unjustified. Filesystem is already the interface. Folder watching via Notify achieves the same event-driven behavior without a broker to maintain.
 
-**Supersedes:** MQTT / Mosquitto broker concept from Command_Center_Concept_Rev1_0.md
+**Supersedes:** MQTT communication layer concept from Command_Center_Concept_Rev1_0.md
 
 ---
 
@@ -125,7 +125,7 @@ This Podium ADR is the append-only record of all architectural decisions made fo
 
 **Decision:** Use GPUI (Zed's rendering framework) as Podium's UI layer. Rust all the way through. No Tauri, no React, no webview.
 
-**Rationale:** Podium evolved from a dashboard to a full native workspace where editor and terminal are first-class citizens. GPUI provides GPU-accelerated native rendering — the same foundation that makes Zed fast. Apache 2.0 licensed. Tauri + React was chosen for a dashboard; it is the wrong stack for a full workspace. The performance characteristics of Zed — which motivated moving off VS Code — require native rendering, not a webview.
+**Rationale:** Podium evolved from a dashboard to a full native workspace where editor and terminal are first-class citizens. GPUI provides GPU-accelerated native rendering — the same foundation that makes Zed fast. Apache 2.0 licensed.
 
 **Supersedes:** ADR-001 (Tauri), ADR-010 (React)
 
@@ -137,7 +137,7 @@ This Podium ADR is the append-only record of all architectural decisions made fo
 
 **Decision:** Use Zed's open source terminal component as the foundation for Podium's terminal panel.
 
-**Rationale:** Zed's terminal is native, GPU-accelerated, battle-tested, and open source. The performance is proven — directly experienced when switching from VS Code to Zed. Building on what already exists and works is smarter than rebuilding it. Zed is MIT/Apache licensed.
+**Rationale:** Zed's terminal is native, GPU-accelerated, battle-tested, and open source. Building on what already exists and works is smarter than rebuilding it.
 
 **Supersedes:** ADR-009 (xterm.js)
 
@@ -149,7 +149,7 @@ This Podium ADR is the append-only record of all architectural decisions made fo
 
 **Decision:** Podium's editor is built natively on GPUI, referencing Zed's editor architecture. Monaco is not used.
 
-**Rationale:** Monaco is a web-based editor running in a webview. Even inside Tauri it is JavaScript rendering text. GPUI renders natively with GPU acceleration. For a workspace where the editor is a first-class citizen and performance is a core requirement, native rendering is non-negotiable. Zed's editor architecture is open source and serves as the reference implementation.
+**Rationale:** Monaco is a web-based editor running in a webview. GPUI renders natively with GPU acceleration. Native rendering is non-negotiable for a workspace where the editor is a first-class citizen.
 
 **Supersedes:** ADR-007 (Zed as external editor)
 
@@ -161,7 +161,7 @@ This Podium ADR is the append-only record of all architectural decisions made fo
 
 **Decision:** Podium is a single persistent room. Projects are loaded into the room, not the other way around. One project loaded at a time. All panels recontextualize completely on project load.
 
-**Rationale:** Cleaner architecture than maintaining simultaneous state for multiple projects. Mirrors how a physical workspace functions — the workspace is fixed, the work changes. Claude Desktop implements the same isolation model for AI chat and validates that the pattern works in daily use. Deep focus on one project at a time matches actual working patterns.
+**Rationale:** Cleaner architecture than maintaining simultaneous state for multiple projects. Mirrors how a physical workspace functions — the workspace is fixed, the work changes.
 
 **Refines:** ADR-003 (room model)
 
@@ -171,9 +171,9 @@ This Podium ADR is the append-only record of all architectural decisions made fo
 **Date:** 2026-08-06
 **Status:** Accepted
 
-**Decision:** Project load and unload are sequential, never concurrent. Hard cleanup on unload — all watchers stopped, all connections closed, all context cleared — before any new project loads. A hard loading state enforced at the application level between projects.
+**Decision:** Project load and unload are sequential, never concurrent. Hard cleanup on unload — all watchers stopped, all connections closed, all context cleared — before any new project loads.
 
-**Rationale:** When one room exists and projects swap in and out, cross-contamination is an architectural risk. Stale context, wrong project attribution, open connections to the previous project's agents — all preventable with strict isolation protocol. Safeguards are baked into the application, not added as optional features.
+**Rationale:** When one room exists and projects swap in and out, cross-contamination is an architectural risk. Safeguards are baked into the application, not added as optional features.
 
 ---
 
@@ -183,17 +183,17 @@ This Podium ADR is the append-only record of all architectural decisions made fo
 
 **Decision:** The chat panel provides two surfaces in one unified UI — Anthropic API chat and local agent HTTP endpoint chat. Both are native HTTP calls from Rust. Chat history is persisted per agent per project, loaded on project load, saved on project unload.
 
-**Rationale:** Podium replaces the claude.ai browser tab for AI chat. It also provides direct interactive access to local agents on the inference node/NAS. Both surfaces belong in the same panel with a unified interface but distinct backends.
+**Rationale:** Podium replaces the claude.ai browser tab for AI chat and provides direct interactive access to local agents. Both surfaces belong in the same panel with a unified interface but distinct backends.
 
 ---
 
-## ADR-017 — Inbox/outbox and live chat are separate agent interfaces
+## ADR-017 — Inbox/outbox and live chat are separate delivery mechanisms
 **Date:** 2026-08-06
-**Status:** Accepted
+**Status:** Accepted — clarified 2026-08-07
 
-**Decision:** Each agent runs two interfaces simultaneously — filesystem inbox/outbox for autonomous work instructions, and an HTTP server for live interactive chat. These are distinct, never mixed.
+**Decision:** Each agent has two interfaces simultaneously — filesystem inbox/outbox (asynchronous, file-based) and an HTTP server for live interactive chat (real-time, conversational). These are separate delivery mechanisms, never mixed.
 
-**Rationale:** Inbox/outbox is for autonomous governance-driven work — Primers dropped in, outputs returned, no human in the loop during execution. Live chat is for direct interactive conversation with a specific agent from within Podium. Conflating them would compromise the autonomous work pipeline and the interactive chat experience. Each serves a different purpose and must remain separate.
+**Clarification:** Both interfaces can be used by the human, by governance agents, or by automated pipelines. The distinction is how work is delivered — not who delivers it. Chat is real-time and interactive. Inbox/outbox is asynchronous — instructions, documents, and work packages are dropped in and picked up when the agent runs. A human can use either interface.
 
 ---
 
@@ -203,7 +203,7 @@ This Podium ADR is the append-only record of all architectural decisions made fo
 
 **Decision:** The laptop's RTX 5060 8GB is dedicated entirely to Podium's GPUI rendering. No other workloads compete for this VRAM.
 
-**Rationale:** GPUI uses the GPU for rendering. Dedicated hardware means consistent, fast rendering with no competition from other processes. The inference node (DGX Spark) handles all model inference — the laptop GPU is free to serve Podium exclusively.
+**Rationale:** GPUI uses the GPU for rendering. Dedicated hardware means consistent, fast rendering with no competition from other processes.
 
 ---
 
@@ -213,7 +213,7 @@ This Podium ADR is the append-only record of all architectural decisions made fo
 
 **Decision:** The project onboarding flow uses a Sheet (slide-in panel) rather than a Dialog (modal overlay).
 
-**Rationale:** Sheet keeps Podium visible behind the onboarding flow, providing context rather than blocking it entirely. More approachable for users who are not experienced developers. Supports the progressive disclosure design principle — the user can see the workspace they are configuring while configuring it.
+**Rationale:** Sheet keeps Podium visible behind the onboarding flow — more approachable for non-developer users. Supports progressive disclosure — the user can see the workspace they are configuring while configuring it.
 
 ---
 
@@ -221,14 +221,12 @@ This Podium ADR is the append-only record of all architectural decisions made fo
 **Date:** 2026-08-07
 **Status:** Accepted
 
-**Decision:** Speed is the default. Clarity is available on demand. Every configuration surface in Podium implements progressive disclosure — fast path for experienced users, contextual explanation available without being in the way.
+**Decision:** Speed is the default. Clarity is available on demand. Every configuration surface in Podium implements progressive disclosure.
 
 **Implementation pattern:**
 - Field label + input — always visible
 - One-line hint beneath each field — always visible, subtle
 - Expandable "?" for fuller explanation — inline, collapsed by default
-
-**Rationale:** Podium's core design principle is speed and agility. This cannot be sacrificed for clarity. But clarity must be available for users who are not already developers. No user is slowed down by information they don't need, and no user is blocked by information they can't find.
 
 **Applies to:** All onboarding steps, all settings panels, all configuration surfaces throughout Podium.
 
@@ -240,7 +238,7 @@ This Podium ADR is the append-only record of all architectural decisions made fo
 
 **Decision:** No fixed agent roster. Users define agents from scratch per project — name, purpose, avatar, model provider, KB sources. Any provider supported: Anthropic, OpenAI, Google, xAI, Custom/Local.
 
-**Rationale:** Different projects have different agent needs. Different users will have different provider preferences and mixes. A fixed roster assumes a workflow that won't apply universally. User-defined roster gives full flexibility with no constraints imposed by Podium.
+**Rationale:** Different projects have different agent needs. Different users will have different provider preferences. A fixed roster assumes a workflow that won't apply universally.
 
 ---
 
@@ -248,19 +246,24 @@ This Podium ADR is the append-only record of all architectural decisions made fo
 **Date:** 2026-08-07
 **Status:** Accepted
 
-**Decision:** Provider API keys (Anthropic, OpenAI, Google, xAI) are stored once globally per provider in Windows Credential Manager. Shared across all agents using that provider. Never stored in projects.toml. Service credentials (Supabase, Railway, etc.) stored per-project in Windows Credential Manager scoped to project ID.
+**Decision:** Provider API keys (Anthropic, OpenAI, Google, xAI) stored once globally per provider in Windows Credential Manager. Shared across all agents using that provider. Never in projects.toml. Service credentials stored per-project scoped to project ID.
 
-**Rationale:** Users should not need to enter the same API key multiple times. One entry per provider, applied everywhere that provider is used. Service credentials are per-project because different projects may use different accounts or organizations for the same service.
+**Rationale:** Users should not need to enter the same API key multiple times. Service credentials are per-project because different projects may use different accounts for the same service.
 
 ---
 
-## ADR-023 — Knowledge base is a library of sources, assigned per agent
+## ADR-023 — KB sources are global to Podium, connected per project, assigned per agent
 **Date:** 2026-08-07
-**Status:** Accepted
+**Status:** Accepted — refined 2026-08-07
 
-**Decision:** KB is not a single connection per project. Each project has a library of configured KB sources. Each agent selects which sources it has access to. An agent only knows what it is explicitly given.
+**Decision:** KB sources are a Podium-level global resource stored in `kb_sources.toml`. Configured once in Podium Settings. Projects select which sources from the global library to connect. Agents select which of the project's connected sources they can access.
 
-**Rationale:** Isolates agent context precisely. A research agent can have full KB access while a code agent has none. A doc agent can access project docs but not a separate research source. This prevents agents from having access to context outside their defined scope — consistent with the agent isolation principle (ADR-004).
+**Three levels:**
+- **Podium Settings** — global KB source library (create and manage sources here)
+- **Project Settings** — which sources from the global library this project uses
+- **Agent configuration** — which of the project's connected sources this agent can access
+
+**Rationale:** KB sources like MemPalace or Obsidian vaults are infrastructure — they exist independently of any single project. Configuring them once globally avoids duplicating connection details per project. The same source can serve multiple projects. Agent context is still isolated precisely — an agent only accesses what it is explicitly assigned.
 
 ---
 
@@ -268,9 +271,9 @@ This Podium ADR is the append-only record of all architectural decisions made fo
 **Date:** 2026-08-07
 **Status:** Accepted
 
-**Decision:** Global and project settings are accessed via a top-level application menu — same pattern as Zed. Settings is not a tab in the main tab bar. Tab bar is: Files | Agents | Knowledge | Review | Terminal | Health.
+**Decision:** Global and project settings accessed via top-level application menu — same pattern as Zed. Tab bar is: Files | Agents | Knowledge | Review | Terminal | Health.
 
-**Rationale:** Settings is not a working surface — it's configuration. It doesn't belong alongside working tabs. Application menu keeps the tab bar focused on work. Matches the Zed pattern that is already familiar.
+**Rationale:** Settings is configuration, not a working surface. Application menu keeps the tab bar focused on work.
 
 ---
 
@@ -278,6 +281,6 @@ This Podium ADR is the append-only record of all architectural decisions made fo
 **Date:** 2026-08-07
 **Status:** Accepted
 
-**Decision:** All external service credentials (Supabase, Railway, GitHub, and all future services) are per-project. No global service tokens. Stored in Windows Credential Manager scoped to project ID.
+**Decision:** All external service credentials (Supabase, Railway, GitHub, and all future services) are per-project. Stored in Windows Credential Manager scoped to project ID.
 
-**Rationale:** Different projects use different accounts, organizations, and instances of the same services. A global token would force all projects to share one account which is incorrect for multi-project workflows. Per-project credentials are the only safe default.
+**Rationale:** Different projects use different accounts and instances of the same services. Per-project credentials are the only safe default.

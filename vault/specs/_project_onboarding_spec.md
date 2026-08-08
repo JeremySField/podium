@@ -9,7 +9,7 @@ status: APPROVED — all decisions locked, ready for build
 <!-- Podium project_onboarding_spec -->
 
 # Podium — Project Onboarding & Project Switcher Spec
-## Rev 1.0 — APPROVED
+## Rev 1.1 — APPROVED
 
 All decisions locked. This document is the authoritative reference for building the project switcher, onboarding flow, and related systems.
 
@@ -21,7 +21,7 @@ All decisions locked. This document is the authoritative reference for building 
 
 - The project switcher UI in the TitleBar
 - The "Add New Project" onboarding flow
-- The `projects.toml` data schema
+- The `projects.toml` and `kb_sources.toml` data schemas
 - The room filesystem structure created during onboarding
 - Agent configuration model
 - Knowledge base connector model
@@ -51,34 +51,97 @@ Combobox — searchable dropdown. Type to filter projects. Matches Zed's project
 
 ### 2.4 Application Menu
 Top-level application menu — same pattern as Zed:
-- Podium Settings (global)
+- Podium Settings (global — KB sources, provider API keys, theme, keymap)
 - Project Settings (active project)
-- Theme
-- Keymap
 - Quit
 
 ### 2.5 Tab Bar
-Settings removed from tab bar. Tab bar is:
 **Files | Agents | Knowledge | Review | Terminal | Health**
 
 ---
 
-## 3. The Project Model
+## 3. Knowledge Base Sources — Global Library
 
-### 3.1 What a Project Is
+### 3.1 KB Sources Are Global to Podium
+KB sources are a Podium-level resource, not scoped to any project. They are configured once in Podium Settings and are available to all projects. Managing the library — adding, editing, removing sources, rotating tokens — happens in Podium Settings, not in project configuration.
+
+### 3.2 KB Source Usage
+- **Podium Settings** — add, edit, remove KB sources from the global library
+- **Project Settings** — select which KB sources this project uses (from the global library)
+- **Agent configuration** — select which of the project's connected sources each agent can access
+
+### 3.3 Knowledge Tab in Podium
+Shows the KB sources connected to the loaded project and their agent assignments:
+- Source name and provider
+- Which agents are connected to which sources
+- Sync status / last query per source
+- Link to manage sources in Podium Settings
+
+### 3.4 kb_sources.toml Schema
+KB sources stored separately from projects — global Podium config:
+
+```toml
+# %APPDATA%\podium\kb_sources.toml
+
+[[sources]]
+id = "main-mempalace"
+name = "Main MemPalace"
+provider = "mempalace"
+endpoint = "http://nas-ip:port"
+# bearer token in Windows Credential Manager, scoped to source ID
+
+[[sources]]
+id = "project-obsidian"
+name = "Project Obsidian Vault"
+provider = "obsidian"
+endpoint = "http://localhost:27123"
+# token in Windows Credential Manager, scoped to source ID
+
+[[sources]]
+id = "notion-docs"
+name = "Notion Documentation"
+provider = "notion"
+# API key in Windows Credential Manager, scoped to source ID
+```
+
+### 3.5 Supported KB Providers
+
+**Beta:**
+| Provider | Notes |
+|----------|-------|
+| MemPalace | Endpoint + bearer token |
+| Obsidian | Via Local REST API plugin |
+| Notion | API key + database ID |
+| Custom | Any HTTP query endpoint |
+
+**v1.0 — based on community demand from beta.**
+
+### 3.6 Per KB Source Fields
+- **Source name** — user defined
+- **Provider** — dropdown
+- **Endpoint URL**
+- **Wing / namespace** — provider-specific (e.g. MemPalace wing — configured per project connection, not in the global source)
+- **Auth token** — Windows Credential Manager, scoped to source ID
+- **Read-only** — always enforced, not configurable
+
+---
+
+## 4. The Project Model
+
+### 4.1 What a Project Is
 A project is a registered workspace room with:
 - Name and display identity
 - Root filesystem path
 - Room folder structure (`.podium/` inside project root)
 - User-defined agent roster with per-agent model source and KB source assignments
-- Knowledge base source library (per-project, assigned per agent)
+- KB sources connected to this project (selected from global library)
 - Service connections (per-project)
 - Git configuration (per-project)
 
-### 3.2 projects.toml Location
+### 4.2 projects.toml Location
 `%APPDATA%\podium\projects.toml` on Windows.
 
-### 3.3 projects.toml Schema
+### 4.3 projects.toml Schema
 
 ```toml
 [[projects]]
@@ -91,6 +154,16 @@ last_opened = "2026-08-07T20:00:00Z"
 account = "showflyer-github"
 remote = "git@github-showflyer:username/showflyer.git"
 
+# KB sources connected to this project — references global source IDs
+# wing/namespace config is per-project-connection since the same source
+# may serve different wings for different projects
+[[projects.kb_connections]]
+source_id = "main-mempalace"
+wing = "showflyer"
+
+[[projects.kb_connections]]
+source_id = "project-obsidian"
+
 [[projects.agents]]
 id = "research-agent"
 name = "Research Agent"
@@ -98,7 +171,7 @@ purpose = "Finds and synthesizes external sources"
 avatar = "path/to/avatar.png"     # optional
 provider = "anthropic"
 model = "claude-sonnet-4-6"
-kb_sources = ["showflyer-mempalace"]
+kb_sources = ["main-mempalace"]   # references global source IDs
 
 [[projects.agents]]
 id = "doc-agent"
@@ -107,22 +180,7 @@ purpose = "Maintains documentation and session logs"
 provider = "custom"
 endpoint = "http://inference-node:8080"
 model = "hermes-14b"
-kb_sources = ["showflyer-mempalace", "showflyer-docs"]
-
-[[projects.kb_sources]]
-id = "showflyer-mempalace"
-name = "ShowFlyer MemPalace"
-provider = "mempalace"
-endpoint = "http://nas-ip:port"
-wing = "showflyer"
-# bearer token in Windows Credential Manager
-
-[[projects.kb_sources]]
-id = "showflyer-docs"
-name = "ShowFlyer Obsidian Vault"
-provider = "obsidian"
-endpoint = "http://localhost:27123"
-# token in Windows Credential Manager
+kb_sources = ["main-mempalace", "project-obsidian"]
 
 [[projects.services]]
 type = "supabase"
@@ -137,12 +195,12 @@ project_id = "xxx"
 # API token in Windows Credential Manager, scoped to project ID
 ```
 
-### 3.4 Project Name Rules
+### 4.4 Project Name Rules
 Letters, numbers, spaces, hyphens, underscores only. If it can be a folder name, it can be a project name. Special characters disallowed: `/ \ : * ? " < > | . @`
 
 ---
 
-## 4. Room Folder Structure
+## 5. Room Folder Structure
 
 `.podium/` lives inside the project root. Auto-added to project `.gitignore` on creation.
 
@@ -161,22 +219,22 @@ Letters, numbers, spaces, hyphens, underscores only. If it can be a folder name,
 
 ---
 
-## 5. Onboarding Flow
+## 6. Onboarding Flow
 
-### 5.1 Entry Points
+### 6.1 Entry Points
 - "Add New Project" in project switcher Combobox
 - Application menu
 
-### 5.2 First Launch Empty State
+### 6.2 First Launch Empty State
 Empty state screen — no auto-open of onboarding:
 - Centered text: "No projects yet. Add your first project."
 - Single "Add New Project" button
 - Nothing else
 
-### 5.3 Flow UI Container
+### 6.3 Flow UI Container
 Sheet — slides in from the side. Podium visible behind it. Per ADR-019.
 
-### 5.4 Step Navigation
+### 6.4 Step Navigation
 - Linear step flow
 - Back button on all steps except Step 1
 - Cancel on all steps — discards all input, no project created
@@ -184,7 +242,7 @@ Sheet — slides in from the side. Podium visible behind it. Per ADR-019.
 - Folder and name required. All other steps skippable.
 - New project loads automatically after creation.
 
-### 5.5 Progressive Disclosure — Per ADR-020
+### 6.5 Progressive Disclosure — Per ADR-020
 Every field has:
 - Field label + input (always visible)
 - One-line hint beneath (always visible, subtle)
@@ -194,7 +252,7 @@ Fast path is always the default. Explanation always one tap away.
 
 ---
 
-## 6. Step 1 — Folder Selection
+## 7. Step 1 — Folder Selection
 
 - Native OS folder picker via `rfd` crate (Rusty File Dialog)
 - Folder name pre-fills project name in Step 2
@@ -203,7 +261,7 @@ Fast path is always the default. Explanation always one tap away.
 
 ---
 
-## 7. Step 2 — Project Identity
+## 8. Step 2 — Project Identity
 
 **Fields:**
 - Project name — pre-filled from folder name, editable, required
@@ -216,7 +274,7 @@ Fast path is always the default. Explanation always one tap away.
 
 ---
 
-## 8. Step 3 — Git Configuration (Skippable)
+## 9. Step 3 — Git Configuration (Skippable)
 
 **Fields:**
 - Git account — SSH config alias, populated by parsing `~/.ssh/config` Host entries
@@ -232,83 +290,63 @@ Fast path is always the default. Explanation always one tap away.
 
 ---
 
-## 9. Step 4 — Agent Configuration (Skippable)
+## 10. Step 4 — Agent Configuration (Skippable)
 
-### 9.1 Agent Roster
-Fully user-defined per project. No fixed roster. Users create agents from scratch, name them, assign purpose, configure model source.
+### 10.1 Agent Roster
+Fully user-defined per project. No fixed roster. Users create agents from scratch.
 
-### 9.2 Per Agent Fields
+### 10.2 Per Agent Fields
 - **Name** — user defined
 - **Purpose** — free text, shown on agent card
 - **Avatar** — optional image upload
 - **Provider** — Anthropic, OpenAI, Google, xAI, Custom/Local
 - **Model** — dropdown by provider, or free text for Custom/Local
 - **Endpoint URL** — Custom/Local only
-- **Knowledge Base Sources** — multi-select from configured KB sources
+- **Knowledge Base Sources** — multi-select from KB sources connected to this project
 
-### 9.3 Supported Providers
+### 10.3 Supported Providers
 | Provider | Notes |
 |----------|-------|
 | Anthropic | Claude — Haiku, Sonnet, Opus |
 | OpenAI | GPT models |
 | Google | Gemini models |
 | xAI | Grok models |
-| Custom / Local | Any OpenAI-compatible endpoint — Ollama, LM Studio, inference node, etc. |
+| Custom / Local | Any OpenAI-compatible endpoint |
 
-### 9.4 API Key Storage
-Stored globally per provider in Windows Credential Manager. Entered once per provider, shared across all agents using that provider. Never in projects.toml.
+### 10.4 API Key Storage
+Stored globally per provider in Windows Credential Manager. Entered once per provider. Never in projects.toml.
 
-### 9.5 Agent Folder Creation
-On agent creation Podium creates `.podium/agents/[agent-id]/inbox/`, `outbox/`, `working/`.
-On agent deletion — moved to `.podium/agents/archive/[agent-id]/`. Never permanently deleted.
+### 10.5 Agent Folder Creation
+On agent creation: `.podium/agents/[agent-id]/inbox/`, `outbox/`, `working/` created.
+On agent deletion: moved to `.podium/agents/archive/[agent-id]/`. Never permanently deleted.
 
 **Skip behavior:** Agents tab shows "No agents configured" with "Add Agent" button.
 
 ---
 
-## 10. Step 5 — Knowledge Base Configuration (Skippable)
+## 11. Step 5 — Knowledge Base Sources (Skippable)
 
-### 10.1 KB Model
-A library of configured sources per project. Multiple sources configurable. Each agent selects which sources it has access to — isolating agent context explicitly. An agent only knows what it is given.
+### 11.1 What Happens Here
+The user selects which KB sources from the global library to connect to this project. This is a selection step, not a creation step. KB sources are created and managed in Podium Settings.
 
-### 10.2 Supported Providers
+If no KB sources have been configured yet in Podium Settings, this step shows a prompt: "No knowledge base sources configured yet. Add sources in Podium Settings."
 
-**Beta:**
-| Provider | Notes |
-|----------|-------|
-| MemPalace | Endpoint + wing name + bearer token |
-| Obsidian | Via Local REST API plugin |
-| Notion | API key + database ID |
-| Custom | Any HTTP query endpoint |
+### 11.2 Fields
+- Multi-select from global KB source library
+- For MemPalace sources — wing/namespace field (project-specific, since the same MemPalace instance may serve different wings for different projects)
 
-**v1.0 — based on community demand from beta.**
-
-### 10.3 Per KB Source Fields
-- **Source name** — user defined
-- **Provider** — dropdown
-- **Endpoint URL**
-- **Wing / namespace** — provider-specific (e.g. MemPalace wing)
-- **Auth token** — Windows Credential Manager, scoped to source ID
-- **Read-only** — always enforced, not configurable
-
-### 10.4 Knowledge Tab in Podium
-- All configured KB sources for the loaded project
-- Which agents are connected to which sources
-- Sync status / last query per source
-- "Add Source" button
-
-**Skip behavior:** Knowledge tab shows "No knowledge base sources configured" with "Add Source" button.
+**Skip behavior:** Knowledge tab shows "No KB sources connected" with link to Podium Settings.
 
 ---
 
-## 11. Step 6 — Services Configuration (Skippable)
+## 12. Step 6 — Services Configuration (Skippable)
 
-### 11.1 Purpose
-Powers the Health tab — external APIs Podium polls to show project health and status.
+### 12.1 Purpose
+Powers the Health tab — external APIs Podium polls for project health status.
 
-### 11.2 All service credentials are per-project, stored in Windows Credential Manager scoped to project ID.
+### 12.2 All service credentials are per-project, stored in Windows Credential Manager scoped to project ID.
 
-### 11.3 Supported Services
+### 12.3 Supported Services
 
 **Beta:**
 | Service | Fields |
@@ -319,61 +357,58 @@ Powers the Health tab — external APIs Podium polls to show project health and 
 | Custom | Name + polling URL + expected response |
 
 **v1.0:**
-
-Infrastructure/Deploy: Vercel, Netlify, Fly.io, Render, AWS (CloudWatch/EC2), Digital Ocean
-
+Infrastructure/Deploy: Vercel, Netlify, Fly.io, Render, AWS, Digital Ocean
 Database: PlanetScale, Neon, MongoDB Atlas, Firebase
-
 Monitoring: Datadog, Sentry, Uptime Robot, Better Uptime
-
 CI/CD: CircleCI, Jenkins (GitHub Actions via GitHub)
-
 Notifications: Slack webhook, Discord webhook
 
 **Skip behavior:** Health tab shows "No services configured" with "Add Service" button.
 
 ---
 
-## 12. Step 7 — Confirm & Create
+## 13. Step 7 — Confirm & Create
 
-### 12.1 Summary Screen
-Review of all configured values:
+### 13.1 Summary Screen
 - Project name and folder path
 - Git account and remote (if configured)
 - Agents list with providers (if configured)
-- KB sources (if configured)
+- KB sources connected (if configured)
 - Services (if configured)
 
-### 12.2 Creation Actions
+### 13.2 Creation Actions
 1. Write project entry to `%APPDATA%\podium\projects.toml`
 2. Create `.podium/` folder structure in project root
 3. Add `.podium/` to project `.gitignore`
-4. Store credentials in Windows Credential Manager
-5. Add project to switcher list (most recently used — appears at top)
+4. Store service credentials in Windows Credential Manager
+5. Add project to switcher list
 6. Load new project automatically
 
 ---
 
-## 13. Global vs Project Settings Reference
+## 14. Global vs Project Settings Reference
 
 | Setting | Scope | Storage |
 |---------|-------|---------|
 | Provider API keys | Global per provider | Windows Credential Manager |
+| KB source library | Global — Podium level | kb_sources.toml |
+| KB source auth tokens | Global per source | Windows Credential Manager |
 | Theme | Global | Podium config |
 | Keymap | Global | Podium config |
 | Project name | Per-project | projects.toml |
 | Project folder path | Per-project | projects.toml |
 | Git account | Per-project | projects.toml |
 | Git remote URL | Per-project | projects.toml |
+| KB sources connected | Per-project | projects.toml |
+| Wing/namespace per source | Per-project connection | projects.toml |
 | Agent roster | Per-project | projects.toml |
 | Agent model source | Per-agent | projects.toml |
-| Agent KB sources | Per-agent | projects.toml |
-| KB source library | Per-project | projects.toml |
-| KB auth tokens | Per-source | Windows Credential Manager |
+| Agent KB source access | Per-agent | projects.toml |
 | Service connections | Per-project | projects.toml |
 | Service API tokens | Per-project | Windows Credential Manager |
 
 ---
 
-*Rev 1.0 — 2026-08-07 — APPROVED — all decisions locked*
-*Supersedes Rev 0.1 and Rev 0.2*
+*Rev 1.1 — 2026-08-07 — APPROVED*
+*KB sources correctly modeled as global Podium-level resource*
+*Supersedes Rev 1.0*
