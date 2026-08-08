@@ -25,11 +25,13 @@ Podium is the room. It is fixed and persistent. Projects load into the room — 
 Every project is fully isolated. Agent inboxes, outboxes, chat history, git context, knowledge base connections, and service credentials are all scoped to the loaded project. Load and unload are sequential — never concurrent.
 
 ### Agent Workspace
-Podium is designed for AI-assisted workflows. Each project has a user-defined roster of agents, each with:
-- A live chat endpoint for direct interactive conversation
-- A filesystem inbox/outbox for autonomous work instructions
+Podium is designed for AI-assisted workflows. Each project has a user-defined roster of agents, each configured with a model provider, knowledge base sources, and a purpose.
 
-These are separate interfaces. Chat is conversational. Inbox/outbox is for governance-driven autonomous work. They never mix.
+Each agent has two interfaces:
+- **Live chat** — real-time, interactive conversation with the agent directly from Podium
+- **Inbox/outbox** — asynchronous, file-based delivery of instructions, documents, and work packages
+
+These are separate delivery mechanisms. Chat is real-time and interactive. Inbox/outbox is asynchronous and file-based — instructions and documents are dropped in and picked up when the agent runs. Both can be used by the human, by governance agents, or by automated pipelines. The separation is about how work is delivered, not who delivers it.
 
 ### Knowledge Base
 Each project connects to a library of knowledge base sources. Each agent is explicitly assigned which sources it can access — isolating agent context precisely. Supported providers include MemPalace, Obsidian, Notion, and any custom HTTP endpoint.
