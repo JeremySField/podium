@@ -2,7 +2,7 @@
 project: Podium
 file: adr
 type: append-only — decisions never removed, superseded decisions marked
-last_updated: 2026-08-06
+last_updated: 2026-08-07
 ---
 
 <!-- Podium adr -->
@@ -204,3 +204,80 @@ This Podium ADR is the append-only record of all architectural decisions made fo
 **Decision:** The laptop's RTX 5060 8GB is dedicated entirely to Podium's GPUI rendering. No other workloads compete for this VRAM.
 
 **Rationale:** GPUI uses the GPU for rendering. Dedicated hardware means consistent, fast rendering with no competition from other processes. The inference node (DGX Spark) handles all model inference — the laptop GPU is free to serve Podium exclusively.
+
+---
+
+## ADR-019 — Sheet over Dialog for onboarding flow
+**Date:** 2026-08-07
+**Status:** Accepted
+
+**Decision:** The project onboarding flow uses a Sheet (slide-in panel) rather than a Dialog (modal overlay).
+
+**Rationale:** Sheet keeps Podium visible behind the onboarding flow, providing context rather than blocking it entirely. More approachable for users who are not experienced developers. Supports the progressive disclosure design principle — the user can see the workspace they are configuring while configuring it.
+
+---
+
+## ADR-020 — Progressive disclosure as the core UX design principle
+**Date:** 2026-08-07
+**Status:** Accepted
+
+**Decision:** Speed is the default. Clarity is available on demand. Every configuration surface in Podium implements progressive disclosure — fast path for experienced users, contextual explanation available without being in the way.
+
+**Implementation pattern:**
+- Field label + input — always visible
+- One-line hint beneath each field — always visible, subtle
+- Expandable "?" for fuller explanation — inline, collapsed by default
+
+**Rationale:** Podium's core design principle is speed and agility. This cannot be sacrificed for clarity. But clarity must be available for users who are not already developers. No user is slowed down by information they don't need, and no user is blocked by information they can't find.
+
+**Applies to:** All onboarding steps, all settings panels, all configuration surfaces throughout Podium.
+
+---
+
+## ADR-021 — Agent roster is fully user-defined
+**Date:** 2026-08-07
+**Status:** Accepted
+
+**Decision:** No fixed agent roster. Users define agents from scratch per project — name, purpose, avatar, model provider, KB sources. Any provider supported: Anthropic, OpenAI, Google, xAI, Custom/Local.
+
+**Rationale:** Different projects have different agent needs. Different users will have different provider preferences and mixes. A fixed roster assumes a workflow that won't apply universally. User-defined roster gives full flexibility with no constraints imposed by Podium.
+
+---
+
+## ADR-022 — API keys stored globally per provider in Windows Credential Manager
+**Date:** 2026-08-07
+**Status:** Accepted
+
+**Decision:** Provider API keys (Anthropic, OpenAI, Google, xAI) are stored once globally per provider in Windows Credential Manager. Shared across all agents using that provider. Never stored in projects.toml. Service credentials (Supabase, Railway, etc.) stored per-project in Windows Credential Manager scoped to project ID.
+
+**Rationale:** Users should not need to enter the same API key multiple times. One entry per provider, applied everywhere that provider is used. Service credentials are per-project because different projects may use different accounts or organizations for the same service.
+
+---
+
+## ADR-023 — Knowledge base is a library of sources, assigned per agent
+**Date:** 2026-08-07
+**Status:** Accepted
+
+**Decision:** KB is not a single connection per project. Each project has a library of configured KB sources. Each agent selects which sources it has access to. An agent only knows what it is explicitly given.
+
+**Rationale:** Isolates agent context precisely. A research agent can have full KB access while a code agent has none. A doc agent can access project docs but not a separate research source. This prevents agents from having access to context outside their defined scope — consistent with the agent isolation principle (ADR-004).
+
+---
+
+## ADR-024 — Settings accessed via application menu, not a tab
+**Date:** 2026-08-07
+**Status:** Accepted
+
+**Decision:** Global and project settings are accessed via a top-level application menu — same pattern as Zed. Settings is not a tab in the main tab bar. Tab bar is: Files | Agents | Knowledge | Review | Terminal | Health.
+
+**Rationale:** Settings is not a working surface — it's configuration. It doesn't belong alongside working tabs. Application menu keeps the tab bar focused on work. Matches the Zed pattern that is already familiar.
+
+---
+
+## ADR-025 — All service credentials are per-project
+**Date:** 2026-08-07
+**Status:** Accepted
+
+**Decision:** All external service credentials (Supabase, Railway, GitHub, and all future services) are per-project. No global service tokens. Stored in Windows Credential Manager scoped to project ID.
+
+**Rationale:** Different projects use different accounts, organizations, and instances of the same services. A global token would force all projects to share one account which is incorrect for multi-project workflows. Per-project credentials are the only safe default.
