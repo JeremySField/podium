@@ -2,7 +2,7 @@
 project: Podium
 file: primer
 type: permanent — load at every session start
-last_updated: 2026-08-07
+last_updated: 2026-08-08
 ---
 
 <!-- Podium primer -->
@@ -58,30 +58,40 @@ Podium is the room. Fixed. Permanent. Projects load into the room — the room d
 | UI framework | GPUI (Zed's rendering framework — Apache 2.0) |
 | Language | Rust |
 | UI components | gpui-component (Apache 2.0 — 12.3k stars) |
-| Terminal | Zed terminal component |
+| Terminal | alacritty_terminal (MIT) — independent implementation (Zed terminal crates are GPL-3.0) |
 | Editor | gpui-component Editor (200K lines, LSP, Tree-sitter) |
 | HTTP | Reqwest |
-| Filesystem watcher | Notify |
+| Filesystem watcher | Notify + Zed fs_watcher.rs pattern (Apache 2.0 lift) |
 | Git | git2 |
 | Async | Tokio |
+| Credentials | keyring / Windows Credential Manager |
+| Folder picker | rfd (Rusty File Dialogs) |
 
 **No Tauri. No React. No webview. No Monaco. No xterm.js.**
 
 ---
 
-## gpui-component
+## Zed Codebase — Direct Lifts (Apache 2.0)
 
-Core UI library. Covers Phases 1-6. Do not build custom components where this library covers the need. Initialized with `gpui_component::init(cx)` as first call in `app.run`.
+From Session 3 inspection. All Apache 2.0, safe to incorporate:
 
-LLM-optimized docs: `https://longbridge.github.io/gpui-component/llms-full.txt`
+| Zed Artifact | Use In Phase |
+|---|---|
+| `watch/src/watch.rs` + `error.rs` | Phase 7 agent panel reactive status |
+| `credentials_provider/` trait + Windows impl | Phase 2 credential storage |
+| `fs/src/fs_watcher.rs` | Phase 7 inbox/outbox watcher |
+| `recent_projects/src/ssh_config.rs` | Phase 2 onboarding git step |
 
-Key components for Podium: Tabs, Resizable, Sidebar, TitleBar, StatusBar, Tree, List, Editor, Input, Scrollable, Badge, Spinner, Notification, TextView, Chart, Settings.
+Zed `terminal/` and `terminal_view/` are GPL-3.0 — NOT incorporated. See ADR-026.
 
 ---
 
-## Panels
+## gpui-component
 
-Editor, Terminal, Git, Agents, Chat, MemPalace, Files — all native, all recontextualize on project load.
+Core UI library. Do not build custom components where this library covers the need. Initialized with `gpui_component::init(cx)` as first call in `app.run`.
+
+LLM-optimized docs: `https://longbridge.github.io/gpui-component/llms-full.txt`
+Local reference: `vault/phase_1/gpui-component-docs.md`
 
 ---
 
@@ -91,14 +101,14 @@ Two surfaces, one UI:
 - Anthropic API — Claude, native HTTP
 - Local agent HTTP endpoints — direct interactive chat per agent
 
-Inbox/outbox is NOT chat. Inbox/outbox is autonomous work instructions. They are separate interfaces.
+Inbox/outbox is a separate delivery mechanism — asynchronous, file-based. Both inbox/outbox and chat can be used by the human or by automated pipelines.
 
 ---
 
 ## Agent Model
 
 Each agent has two simultaneous interfaces:
-- Filesystem inbox/outbox — autonomous work instructions
+- Filesystem inbox/outbox — asynchronous delivery of instructions and documents
 - HTTP server — live interactive chat endpoint
 
 Agents are isolated per project room. No cross-project access.
@@ -117,16 +127,17 @@ Agents are isolated per project room. No cross-project access.
 
 | Phase | Deliverable | Status |
 |-------|------------|--------|
-| 0 | GPUI shell, gpui-component initialized | COMPLETE |
+| 0 | GPUI shell, gpui-component initialized | COMPLETE ✅ |
 | 1 | Dark theme, panel layout, project switcher | NEXT |
-| 2 | Project load/unload with isolation protocol | — |
-| 3 | Git panel | — |
-| 4 | Files panel | — |
-| 5 | Editor | — |
-| 6 | Agent panel — live filesystem watcher | — |
-| 7 | Chat panel — Anthropic API + local agent endpoints | — |
-| 8 | MemPalace panel | — |
-| 9 | Polish | — |
+| 2 | Project load/unload, onboarding, credentials | — |
+| 3 | Terminal (alacritty_terminal, independent build) | — |
+| 4 | Git panel | — |
+| 5 | Files panel | — |
+| 6 | Editor | — |
+| 7 | Agent panel — live filesystem watcher | — |
+| 8 | Chat panel — Anthropic API + local agent endpoints | — |
+| 9 | Knowledge panel | — |
+| 10 | Polish | — |
 
 ---
 

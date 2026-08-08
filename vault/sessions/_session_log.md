@@ -2,7 +2,7 @@
 project: Podium
 file: session_log
 type: running session index — concise overview entries, newest at top
-last_updated: 2026-08-07
+last_updated: 2026-08-08
 ---
 
 <!-- Podium session_log -->
@@ -15,53 +15,53 @@ This Podium session log is the running index of all sessions for the Podium proj
 
 ---
 
+## 2026-08-08 — Session 3 (Zed Codebase Inspection)
+
+**Type:** Research / Strategy
+**Goal:** Full Zed crate inspection against Podium spec and ADRs
+
+**Key findings:**
+- 229 crates inspected and mapped to Podium phases
+- Critical GPL discovery: terminal/ and terminal_view/ are GPL-3.0, not Apache 2.0
+- 4 direct lifts identified: watch/, credentials_provider/, fs_watcher.rs, ssh_config.rs
+- dock.rs Panel trait fully mapped — PodiumPanel trait design is clear before Phase 1
+- All major AI provider clients already exist in Zed (anthropic/, open_ai/, google_ai/, ollama/, x_ai/) — potential lifts for Phase 8
+- Zed Docker files noted for agent container pattern research
+
+**Decisions made:**
+- ADR-026: Terminal uses alacritty_terminal (MIT), not Zed terminal crates (GPL)
+- ADR-012 superseded by ADR-026
+- Terminal moves to Phase 3 minimum — independent implementation required
+
+**Phase numbering updated:**
+Phase 3 is now Terminal (was Git). Git moved to Phase 4. Files moved to Phase 5. Editor Phase 6. Agent Panel Phase 7. Chat Phase 8. Knowledge Phase 9. Polish Phase 10.
+
+**Estimated build savings from Zed inspection: 20–35% overall**
+
+**Next session:**
+- Confirm Phase 1 scope
+- Draft PodiumPanel trait signature for approval
+- Begin Phase 1 build
+
+---
+
 ## 2026-08-07 — Session 2 (Phase 0 Completion + Spec Work)
 
 **Type:** Build / Setup / Architecture
 **Goal:** Complete Phase 0, integrate gpui-component, define onboarding and project switcher spec
 
-**Part 1 — Phase 0 Completion**
-- Knowledgebase folder renamed from dashboard to podium
-- gpui-component and gpui-component-assets added to Cargo.toml
-- cargo build confirmed clean
-- main.rs updated — gpui_component::init(cx) added
-- cargo run confirmed — window opens cleanly
-- All changes committed methodically
+**Accomplished:**
+- gpui-component integrated and confirmed working
+- Project onboarding spec written — Rev 1.1 APPROVED
+- ADR-019 through ADR-025 added
+- README written
+- Phase 1 primer written and updated
+- Vault restructured with phase_1 folder
+- Zed repo cloned locally and copied to knowledgebase
 
-**Part 2 — Spec Work**
-- Phase 1 primer written — vault/phase_1/_phase_1_primer.md
-- gpui-component reference docs downloaded — vault/phase_1/gpui-component-docs.md
-- Vault restructured — phase_1 folder added
-- Project onboarding spec written and fully resolved — vault/specs/_project_onboarding_spec.md Rev 1.0 APPROVED
-- ADR-019 (Sheet over Dialog) and ADR-020 (Progressive disclosure) added
-
-**Key decisions this session:**
-- Project switcher: Combobox (searchable, Zed-style)
-- projects.toml: %APPDATA%\podium\
-- Room folder: .podium/ inside project root, auto-gitignored
-- Onboarding: Sheet, skippable steps except folder+name
-- First launch: empty state with prompt, no auto-open
-- Agent roster: fully user-defined, no fixed roster
-- Agent providers: Anthropic, OpenAI, Google, xAI, Custom/Local
-- API keys: global per provider, Windows Credential Manager
-- KB: library of sources per project, assigned per agent
-- KB providers: MemPalace, Obsidian, Notion, Custom (beta)
-- All service credentials: per-project, Windows Credential Manager
-- Services beta: Supabase, Railway, GitHub, Custom
-- Services v1.0: full list documented in spec
-- Settings: application menu (Zed pattern), not a tab
-- Tab bar: Files | Agents | Knowledge | Review | Terminal | Health
-- Progressive disclosure: speed default, clarity on demand
-- Re-import detected .podium/: prompt Skip or Overwrite
-- New project loads automatically after creation
-- Deleted agent folders archived, never permanently deleted
+**Key decisions:** See session_002 report
 
 **Phase 0 status: COMPLETE**
-
-**Next steps:**
-- Commit all spec and vault updates
-- Phase 1: GPUI shell with dark theme, panel layout, project switcher
-- Read phase_1/_phase_1_primer.md before Phase 1 session start
 
 ---
 
@@ -72,18 +72,10 @@ This Podium session log is the running index of all sessions for the Podium proj
 
 **Accomplished:**
 - Named the project: Podium
-- Stack evolved from Tauri + React to GPUI + Rust
-- Defined room model — Podium is the room, projects load into it
-- Defined agent isolation — inbox/outbox + live HTTP chat endpoint per agent
-- Defined project isolation protocol — sequential load/unload, hard cleanup
-- Defined chat panel — Anthropic API + local agent HTTP endpoints
+- Full architecture defined — room model, agent isolation, project isolation protocol
+- Stack: GPUI + Rust + gpui-component
 - ADR-001 through ADR-018 written
-- Vault structure created, all four core docs written
-- Archived original ShowFlyer Homepage dashboard to podium/archive/
 - Repo created: github.com/JeremySField/podium (public, Apache-2.0)
-- Rust 1.97.1 and Visual Studio Build Tools confirmed
-- create-gpui-app scaffolded project
-- Fixed API mismatch — Application::new() replaced with gpui_platform::application()
 - GPUI window confirmed working on Windows
 - First commits pushed
 
