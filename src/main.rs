@@ -1,3 +1,5 @@
+mod panel;
+
 use gpui::*;
 use gpui_component::init;
 

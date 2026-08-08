@@ -15,6 +15,34 @@ This Podium session log is the running index of all sessions for the Podium proj
 
 ---
 
+## 2026-08-08 — Session 3b (PodiumPanel Trait — Design and Implementation)
+
+**Type:** Development
+**Goal:** Write `PodiumPanel` trait before Phase 1 build begins
+
+**Accomplished:**
+- All three Session 3 open questions resolved before writing any code
+- ADR-027 recorded — dock owns panel position persistence, panels are storage-agnostic
+- `src/panel.rs` created — `PanelPosition`, `PanelEvent`, `PodiumPanel` trait, fully documented
+- `src/main.rs` updated — `mod panel;` added
+- Trait shape: 7 required methods, 2 lifecycle hooks with default no-ops
+- Repositionable positions retained — `position()`, `position_is_valid()`, `set_position()` all on trait
+- Excluded from trait (intentional): `min_size`, `is_zoomed`, `starts_open`, `Window` param on sizing methods, pane/collab/proto fields, `hide_button_setting`, `enabled`, `is_agent_panel`
+- One open compile question: `gpui_component::IconName` vs `gpui_component::icon::IconName` — surfaces on first `cargo build`
+
+**Key decisions:**
+- `name()` is a static method — type-level identity, not instance state
+- `PanelPosition` derives `Copy` — passed by value everywhere, no clone noise
+- `set_position()` takes `&mut Context<Self>` — panel calls `cx.notify()` after updating state
+- `activation_priority()` documented with recommended values (100/200/300/400/500/600) with gaps
+- Dock panics in debug on duplicate priority — same as Zed
+
+**Next session:** `PanelHandle` object-safe wrapper → `PodiumDock` → `main.rs` rewrite → stub FilesPanel → Phase 1 build
+
+**Full report:** `session_reports/session_003b_2026-08-08.md`
+
+---
+
 ## 2026-08-08 — Session 3 (Zed Codebase Inspection)
 
 **Type:** Research / Strategy
