@@ -58,7 +58,7 @@ Each project connects to a library of knowledge base sources. Each agent is expl
 | UI Framework | [GPUI](https://github.com/zed-industries/zed/tree/main/crates/gpui) — GPU-accelerated native rendering |
 | Language | Rust |
 | UI Components | [gpui-component](https://github.com/longbridge/gpui-component) |
-| Terminal | Zed terminal component |
+| Terminal | alacritty_terminal (MIT) — independent implementation |
 | Editor | Native GPUI editor |
 | Async | Tokio |
 | Git | git2 |
@@ -91,20 +91,21 @@ Podium supports any combination of model providers per agent:
 
 ## Status
 
-Podium is in active development. Currently in Phase 0 — foundation established, GPUI window confirmed working on Windows.
+Podium is in active development. Phase 1 complete — dark theme, panel layout, dock system, and application shell are working.
 
 | Phase | Deliverable | Status |
 |-------|------------|--------|
 | 0 | GPUI shell, gpui-component initialized | ✅ Complete |
-| 1 | Dark theme, panel layout, project switcher | 🔄 Next |
-| 2 | Project load/unload with isolation protocol | — |
-| 3 | Git panel | — |
-| 4 | Files panel | — |
-| 5 | Editor | — |
-| 6 | Agent panel — live filesystem watcher | — |
-| 7 | Chat panel — Anthropic API + local agent endpoints | — |
-| 8 | Knowledge panel | — |
-| 9 | Polish | — |
+| 1 | Dark theme, panel layout, project switcher | ✅ Complete |
+| 2 | Project load/unload, onboarding, credentials | 🔄 Next |
+| 3 | Terminal — alacritty_terminal | — |
+| 4 | Git panel | — |
+| 5 | Files panel | — |
+| 6 | Editor | — |
+| 7 | Agent panel — live filesystem watcher | — |
+| 8 | Chat panel — Anthropic API + local agent endpoints | — |
+| 9 | Knowledge panel | — |
+| 10 | Polish | — |
 
 ---
 
