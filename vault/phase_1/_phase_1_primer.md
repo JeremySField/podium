@@ -2,7 +2,7 @@
 project: Podium
 file: phase_1_primer
 type: phase primer — load at Phase 1 session start alongside _primer.md
-last_updated: 2026-08-07
+last_updated: 2026-08-08
 status: READY — Phase 1 not yet started
 ---
 
@@ -31,9 +31,39 @@ Replace the Hello World green screen with the actual Podium shell — dark theme
 
 ---
 
+## What Was Done in Session 3b (Before Phase 1 Build)
+
+`src/panel.rs` was created — the `PodiumPanel` trait, `PanelPosition`, and `PanelEvent` are defined and documented. `main.rs` was updated with `mod panel;`. These are the foundation Phase 1 builds on.
+
+**Phase 1 build order:**
+```
+panel.rs (done) →
+panel_handle.rs →
+dock.rs →
+main.rs rewrite →
+stub FilesPanel →
+cargo build clean →
+add remaining stub panels →
+wire tab bar →
+wire project switcher Combobox →
+Phase 1 complete
+```
+
+---
+
 ## Critical Prerequisites — Must Resolve Before Writing Code
 
-### 1. Root View is Required
+### 1. IconName Import Path — Verify First
+
+`panel.rs` uses `gpui_component::IconName`. This path must be verified on the first `cargo build`. If it fails, the fallback is:
+
+```rust
+use gpui_component::icon::IconName;
+```
+
+**This is a one-line fix.** Verify on first build — do not spend time debugging anything else until this compiles.
+
+### 2. Root View is Required
 
 The current `main.rs` does NOT use `Root` as the first-level window child. This is a hard requirement for gpui-component to function correctly. Without it, dialogs, sheets, notifications, and theming will not work.
 
@@ -58,14 +88,9 @@ cx.spawn(async move |cx| {
 
 **Source:** https://longbridge.github.io/gpui-component/docs/root
 
-### 2. Assets Must Be Registered
+### 3. Assets Must Be Registered
 
 The current `main.rs` calls `gpui_platform::application()` without registering assets. gpui-component-assets must be registered for icons and default assets to work.
-
-**Current:**
-```rust
-gpui_platform::application().run(...)
-```
 
 **Must be changed to:**
 ```rust
@@ -76,37 +101,32 @@ gpui_platform::application()
 
 **Source:** https://longbridge.github.io/gpui-component/docs/getting-started
 
-### 3. Dark Theme Must Be Set Explicitly
+### 4. Dark Theme Must Be Set Explicitly
 
-gpui-component has 20+ built-in themes. Dark mode is not automatic — it must be set. The theme system uses `ThemeRegistry` to load themes from a `./themes` directory, or themes can be set programmatically.
+gpui-component has 20+ built-in themes. Dark mode is not automatic — it must be set.
 
 **Questions to resolve at session start:**
-- Does gpui-component ship a dark theme that can be set without a themes directory?
-- Is there a built-in dark theme name that can be loaded from the registry without copying theme files?
+- Does gpui-component ship a dark theme settable without a themes directory?
 - What is the simplest way to set dark mode for Phase 1?
 
 **Source:** https://longbridge.github.io/gpui-component/docs/theme
-**Theme files location in repo:** https://github.com/longbridge/gpui-component/tree/main/themes
+**Theme files:** https://github.com/longbridge/gpui-component/tree/main/themes
 
-### 4. TitleBar Component — Windows-Specific Behavior
+### 5. TitleBar — Windows-Specific Behavior
 
-gpui-component has a `TitleBar` component. On Windows, native title bars behave differently than macOS. Need to confirm:
+Confirm:
 - Does TitleBar support custom content on Windows (Combobox project switcher placement)?
 - Does it handle window dragging correctly on Windows?
 
 **Source:** https://longbridge.github.io/gpui-component/docs/components/title-bar
 
-### 5. Resizable Panel Layout
-
-gpui-component has a `Resizable` component for panel layouts. Need to understand:
-- How is a basic layout (main content area) structured?
-- How are initial panel sizes set?
+### 6. Resizable Panel Layout
 
 **Source:** https://longbridge.github.io/gpui-component/docs/components/resizable
 
-### 6. Tabs Component — State Management
+### 7. Tabs Component — State Management
 
-Tabs is a stateful component. Need to confirm:
+Confirm:
 - How is the active tab state held in the view struct?
 - How does tab switching trigger content area re-render?
 
@@ -125,6 +145,7 @@ Tabs is a stateful component. Need to confirm:
 | Visual style | Minimal, text-focused, no color noise |
 | StatusBar | Bottom of window |
 | TitleBar | Top of window with Podium name + project switcher |
+| Panel persistence | Dock owns position persistence — panels are storage-agnostic (ADR-027) |
 
 ---
 
@@ -146,6 +167,10 @@ Tabs is a stateful component. Need to confirm:
 | Local reference copy | vault/phase_1/gpui-component-docs.md |
 | gpui-component examples | https://github.com/longbridge/gpui-component/tree/main/examples |
 | API reference | https://docs.rs/gpui-component |
+| Zed dock reference | Claude Knowledgebase/zed/crates/workspace/src/dock.rs |
+| Zed panel reference | Claude Knowledgebase/zed/crates/panel/src/panel.rs |
+| Zed title bar reference | Claude Knowledgebase/zed/crates/title_bar/src/title_bar.rs |
+| Zed app menu reference | Claude Knowledgebase/zed/crates/title_bar/src/application_menu.rs |
 
 ---
 
@@ -169,12 +194,10 @@ Tabs is a stateful component. Need to confirm:
 
 ---
 
-## main.rs Rewrite Scope for Phase 1
-
-The entire `main.rs` needs to be rewritten — it is currently a hello world placeholder. Phase 1 replaces it with:
+## Phase 1 Build — main.rs Rewrite Scope
 
 1. `PodiumApp` struct — the root view
-2. Assets registered on application with `.with_assets()`
+2. Assets registered with `.with_assets()`
 3. `Root` wrapping `PodiumApp` in the window
 4. Dark theme applied
 5. TitleBar with Podium name and Combobox project switcher placeholder
@@ -188,8 +211,7 @@ The entire `main.rs` needs to be rewritten — it is currently a hello world pla
 
 ## Pre-Session Checklist
 
-Before writing any Phase 1 code, read these docs in order:
-
+- [ ] Verify `gpui_component::IconName` import path compiles — fallback: `gpui_component::icon::IconName`
 - [ ] Root view — https://longbridge.github.io/gpui-component/docs/root
 - [ ] TitleBar — https://longbridge.github.io/gpui-component/docs/components/title-bar
 - [ ] Tabs — https://longbridge.github.io/gpui-component/docs/components/tabs
@@ -198,6 +220,7 @@ Before writing any Phase 1 code, read these docs in order:
 - [ ] Theme — https://longbridge.github.io/gpui-component/docs/theme
 - [ ] Confirm dark theme name from themes directory
 - [ ] Check gpui-component examples for TitleBar + Tabs patterns
+- [ ] Read Zed dock.rs and application_menu.rs before writing dock or menu code
 
 ---
 
@@ -205,9 +228,10 @@ Before writing any Phase 1 code, read these docs in order:
 
 - Current `main.rs` missing `Root` wrapper — must fix before any gpui-component features work correctly
 - Current `main.rs` missing `.with_assets()` — must fix before icons work
+- `IconName` import path in `panel.rs` unverified — first build will confirm or surface fallback
 - Zed right-click context menu not working on Windows — check for Zed update before session
 
 ---
 
-*Phase 1 Primer — updated 2026-08-07*
+*Phase 1 Primer — updated 2026-08-08*
 *Load alongside _primer.md at Phase 1 session start*
