@@ -2,21 +2,23 @@
 //!
 //! `PodiumPanel` is not object-safe because it has a static method (`name()`)
 //! and requires `Sized`. `PanelHandle` is a separate object-safe trait that
-//! mirrors every *instance* method on `PodiumPanel`, and is implemented via a
-//! blanket impl on `Entity<T: PodiumPanel>`.
+//! mirrors every *instance* method on `PodiumPanel`, implemented via a blanket
+//! impl on `Entity<T: PodiumPanel>`.
 //!
 //! The dock holds panels as `Arc<dyn PanelHandle>` and calls these methods to
 //! render tab buttons, dispatch toggle actions, manage position and sizing, and
 //! drive lifecycle events.
 //!
 //! ## Design notes
-//! - `Send + Sync` required because `Arc<dyn PanelHandle>` crosses thread
-//!   boundaries in GPUI's async task system.
-//! - No `Window` parameter on any method — Podium's `PodiumPanel` trait
-//!   deliberately excludes it from sizing and icon queries.
-//! - No `pane`, `remote_id`, `min_size`, `flexible_size`, `icon_label`,
-//!   `is_agent_panel`, or `hide_button_setting` — all Zed-specific, excluded
-//!   by Session 3b design decisions.
+//!
+//! - `Send + Sync` bounds are required because `Arc<dyn PanelHandle>` crosses
+//!   thread boundaries in GPUI's async task system.
+//! - No `Window` parameter on any method — `PodiumPanel` deliberately excludes
+//!   it from sizing and icon queries. Panels answer these from stored state or
+//!   compile-time constants, not from the window.
+//! - Zed-specific methods excluded: `pane`, `remote_id`, `min_size`,
+//!   `flexible_size`, `icon_label`, `is_agent_panel`, `hide_button_setting`.
+//!   See Session 3b design decisions.
 
 use gpui::{Action, AnyView, App, Entity, EntityId, Pixels};
 use gpui_component::IconName;
@@ -38,15 +40,17 @@ use crate::panel::{PanelPosition, PodiumPanel};
 pub trait PanelHandle: Send + Sync {
     // --- Identity -----------------------------------------------------------
 
-    /// Stable runtime identifier for this panel instance's type.
+    /// Stable string identifier for this panel's type.
     ///
-    /// Delegates to `T::name()` on the concrete panel type.
+    /// Delegates to `T::name()` on the concrete panel type. Used as a
+    /// persistence key (Phase 2) and in debug output.
     fn name(&self) -> &'static str;
 
     /// GPUI entity ID of the underlying `Entity<T>`.
     ///
-    /// Used by the dock to find a specific panel in its list (e.g., when
-    /// handling a `PanelEvent::Activate` to locate the emitting panel).
+    /// Used by the dock to locate a specific panel in its list — for example,
+    /// when a `PanelEvent::Activate` arrives and the dock needs to find the
+    /// emitting panel by ID.
     fn panel_id(&self) -> EntityId;
 
     // --- Focus --------------------------------------------------------------
@@ -54,12 +58,12 @@ pub trait PanelHandle: Send + Sync {
     /// The panel's root focus handle.
     ///
     /// Used by the dock to focus the panel when it becomes active, and to
-    /// check whether the panel currently contains focus.
+    /// check whether the panel currently holds focus.
     fn focus_handle(&self, cx: &App) -> gpui::FocusHandle;
 
     // --- View ---------------------------------------------------------------
 
-    /// Erase the concrete type to `AnyView` for rendering inside the dock.
+    /// Erase the concrete panel type to `AnyView` for rendering inside the dock.
     fn to_any(&self) -> AnyView;
 
     // --- Position -----------------------------------------------------------
@@ -68,11 +72,14 @@ pub trait PanelHandle: Send + Sync {
     fn position(&self, cx: &App) -> PanelPosition;
 
     /// Returns true if this panel can be placed at `position`.
+    ///
+    /// Note: `cx` is accepted here for trait method signature consistency with
+    /// other `PanelHandle` methods, but `PodiumPanel::position_is_valid` does
+    /// not need app context — validity is determined by static panel identity,
+    /// not runtime state. The `cx` parameter is dropped in the blanket impl.
     fn position_is_valid(&self, position: PanelPosition, cx: &App) -> bool;
 
     /// Move this panel to `position`.
-    ///
-    /// Calls `set_position` on the inner panel via `Entity::update`.
     fn set_position(&self, position: PanelPosition, cx: &mut App);
 
     // --- Sizing -------------------------------------------------------------
@@ -89,13 +96,18 @@ pub trait PanelHandle: Send + Sync {
     fn icon_tooltip(&self, cx: &App) -> &'static str;
 
     /// The action dispatched when this panel's tab button is clicked.
+    ///
+    /// Phase 2: used to register keyboard shortcuts in the command palette.
+    /// Not called in Phase 1 — tab clicks go through
+    /// `toggle_panel_by_priority` directly.
     fn toggle_action(&self, cx: &App) -> Box<dyn Action>;
 
     // --- Ordering -----------------------------------------------------------
 
-    /// Sort key for the tab button row. Lower values appear first.
+    /// Sort key for the tab bar. Lower values appear first (leftmost).
     ///
     /// The dock panics in debug builds if two panels share a priority.
+    /// See ADR-028 for the assigned values.
     fn activation_priority(&self, cx: &App) -> u32;
 
     // --- Lifecycle ----------------------------------------------------------
@@ -104,6 +116,8 @@ pub trait PanelHandle: Send + Sync {
     fn set_active(&self, active: bool, cx: &mut App);
 
     /// Notify the panel that it has entered or exited zoom mode.
+    ///
+    /// Phase 2: called when `PanelEvent::ZoomIn / ZoomOut` are handled.
     fn set_zoomed(&self, zoomed: bool, cx: &mut App);
 }
 
@@ -136,6 +150,10 @@ where
     }
 
     fn position_is_valid(&self, position: PanelPosition, cx: &App) -> bool {
+        // `cx` is not forwarded to the inner call — PodiumPanel::position_is_valid
+        // does not take context. The parameter exists on PanelHandle for trait
+        // method signature consistency only. See the trait method doc above.
+        let _ = cx;
         self.read(cx).position_is_valid(position)
     }
 
@@ -187,4 +205,7 @@ impl From<&dyn PanelHandle> for AnyView {
 // ---------------------------------------------------------------------------
 
 /// Convenience alias used throughout the dock.
+///
+/// The dock stores panels as `Arc<dyn PanelHandle>` so it can hold a
+/// heterogeneous collection of panel types in a single `Vec`.
 pub type ArcPanelHandle = Arc<dyn PanelHandle>;

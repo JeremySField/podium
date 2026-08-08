@@ -1,16 +1,28 @@
 //! Stub panel implementations for Phase 1.
 //!
 //! Each panel implements `PodiumPanel` with the minimum required to compile
-//! and register with the dock. No real content — each renders an empty div
-//! with a centered label. Real implementations come in later phases.
+//! and register with the dock. No real content — each renders a centered
+//! label. Real implementations come in later phases.
 //!
 //! ## Phase assignments
+//!
 //! - FilesPanel:     Phase 5
 //! - AgentsPanel:    Phase 7
 //! - KnowledgePanel: Phase 9
 //! - ReviewPanel:    Phase 9
 //! - TerminalPanel:  Phase 3
 //! - HealthPanel:    Phase 10
+//!
+//! ## Toggle actions and dead-code warnings
+//!
+//! The six `Toggle*Panel` actions defined below are returned by each panel's
+//! `toggle_action()` method but are never dispatched in Phase 1. Tab clicks
+//! in Phase 1 call `toggle_panel_by_priority` directly (see `main.rs`) to
+//! avoid the focus-tree requirement of the action dispatch system.
+//!
+//! The actions are **not dead code** — they are infrastructure for Phase 2
+//! keyboard shortcuts and command palette integration. The compiler warnings
+//! are expected and intentional. Do not remove them.
 
 use gpui::{
     Action, App, Context, EventEmitter, FocusHandle, Focusable, IntoElement, ParentElement,
@@ -22,7 +34,13 @@ use gpui_component::IconName;
 use crate::panel::{PanelEvent, PanelPosition, PodiumPanel};
 
 // ---------------------------------------------------------------------------
-// Toggle actions — one per panel, dispatched by the tab button on click.
+// Toggle actions
+//
+// One action per panel. Returned by toggle_action() on each panel.
+//
+// Phase 2: register these with the command palette and key bindings so panels
+// can be opened/closed via keyboard shortcuts (e.g. Cmd+1 for Files).
+// Phase 1: unused — tab clicks bypass the action system (see module doc).
 // ---------------------------------------------------------------------------
 
 actions!(
@@ -38,21 +56,26 @@ actions!(
 );
 
 // ---------------------------------------------------------------------------
-// Macro — reduce boilerplate for stub panels
+// stub_panel! macro
 // ---------------------------------------------------------------------------
 
 /// Generate a stub `PodiumPanel` implementation.
 ///
-/// Usage:
-/// ```
+/// All six Phase 1 panels share identical boilerplate. This macro generates
+/// the struct, `new()`, `EventEmitter`, `Focusable`, `Render`, and
+/// `PodiumPanel` impl from a compact declaration.
+///
+/// # Usage
+///
+/// ```rust
 /// stub_panel!(
 ///     FilesPanel,           // struct name
-///     "FilesPanel",         // name() — persistence key
-///     PanelPosition::Left,  // default position
-///     IconName::Inbox,      // icon
-///     "Files",              // icon_tooltip
-///     ToggleFilesPanel,     // toggle action
-///     100,                  // activation_priority
+///     "FilesPanel",         // name() — persistence key, must be unique
+///     PanelPosition::Left,  // default position (ADR-028)
+///     IconName::Inbox,      // icon shown in tab button
+///     "Files",              // icon_tooltip and stub render label
+///     ToggleFilesPanel,     // toggle action type
+///     100,                  // activation_priority (ADR-028)
 /// );
 /// ```
 macro_rules! stub_panel {
@@ -93,6 +116,8 @@ macro_rules! stub_panel {
                 _window: &mut Window,
                 _cx: &mut Context<Self>,
             ) -> impl IntoElement {
+                // Phase 1 stub: centered label only.
+                // Real content implemented in the phase assigned above.
                 div()
                     .size_full()
                     .flex()
@@ -112,7 +137,8 @@ macro_rules! stub_panel {
             }
 
             fn position_is_valid(&self, _position: PanelPosition) -> bool {
-                // Phase 1: all positions valid — user can reposition any panel.
+                // Phase 1: all positions valid for every panel — user can
+                // reposition any panel to any dock in Phase 2.
                 true
             }
 
@@ -134,6 +160,8 @@ macro_rules! stub_panel {
             }
 
             fn toggle_action(&self) -> Box<dyn Action> {
+                // Phase 2: this action will be registered with the command
+                // palette so keyboard shortcuts can open/close the panel.
                 $action.boxed_clone()
             }
 
@@ -145,7 +173,11 @@ macro_rules! stub_panel {
 }
 
 // ---------------------------------------------------------------------------
-// Stub panels
+// Stub panels — one per line, parameters per stub_panel! doc above.
+//
+// Dock assignments and priority values are locked by ADR-028.
+// Default sizes: all Left dock panels → px(280.) width.
+//               TerminalPanel (Bottom) → see note below.
 // ---------------------------------------------------------------------------
 
 stub_panel!(
@@ -196,6 +228,12 @@ stub_panel!(
     "Terminal",
     ToggleTerminalPanel,
     500,
+    // Note: the macro's default_size() returns px(280.) for all panels.
+    // TerminalPanel is in the Bottom dock, so default_size() is a *height*,
+    // not a width. 280px is usable but taller than necessary — the render
+    // in main.rs constrains it to px(240.) for Phase 1.
+    // Phase 3: override default_size() in the real TerminalPanel impl to
+    // return a sensible default terminal height (recommend px(240.)).
 );
 
 stub_panel!(
