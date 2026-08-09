@@ -94,6 +94,46 @@ use panels::{AgentsPanel, FilesPanel, HealthPanel, KnowledgePanel, ReviewPanel, 
 actions!(podium, [Quit]);
 
 // ---------------------------------------------------------------------------
+// First launch init
+// ---------------------------------------------------------------------------
+
+/// Create `%APPDATA%\podium\` and empty config files on first launch.
+///
+/// Called once at startup before the window opens. Silently no-ops if the
+/// directory and files already exist. Errors are logged to stderr but do not
+/// crash the app — a missing config file is handled gracefully at load time
+/// by returning empty defaults.
+///
+/// Files created if absent:
+/// - `%APPDATA%\podium\projects.toml`
+/// - `%APPDATA%\podium\kb_sources.toml`
+///
+/// `podium_state.toml` is not created here — it is written on first project
+/// unload, which is the natural point it first has meaningful content.
+fn first_launch_init() {
+    let dir = config::podium_config_dir();
+
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        eprintln!("podium: failed to create config dir {}: {}", dir.display(), e);
+        return;
+    }
+
+    let projects_path = config::projects_toml_path();
+    if !projects_path.exists() {
+        if let Err(e) = config::ProjectsConfig::default().save() {
+            eprintln!("podium: failed to write projects.toml: {}", e);
+        }
+    }
+
+    let kb_sources_path = config::kb_sources_toml_path();
+    if !kb_sources_path.exists() {
+        if let Err(e) = config::KbSourcesConfig::default().save() {
+            eprintln!("podium: failed to write kb_sources.toml: {}", e);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // PodiumApp — root view
 // ---------------------------------------------------------------------------
 
@@ -400,6 +440,10 @@ fn main() {
     let app = gpui_platform::application().with_assets(gpui_component_assets::Assets);
 
     app.run(move |cx: &mut App| {
+        // Ensure %APPDATA%\podium\ and empty config files exist before the
+        // UI starts. No-ops on all subsequent launches.
+        first_launch_init();
+
         // Initialize gpui-component — must be the first call inside app.run().
         gpui_component::init(cx);
 
