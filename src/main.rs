@@ -54,11 +54,13 @@
 //! - Phase 10: full JSON-driven theme system
 
 mod colors;
+mod config;
 mod dock;
 mod panel;
 mod panel_handle;
 mod panels;
 mod ssh_config;
+mod state;
 mod watch;
 mod watch_error;
 

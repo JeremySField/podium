@@ -79,7 +79,7 @@ struct State<T> {
 
 /// The sending half of a watch channel.
 ///
-/// Dropping the sender marks the channel as closed; any pending `recv()` on
+/// Dropping the sender closed; any pending `recv()` on
 /// a `Receiver` will resolve to `Err(NoSenderError)`.
 pub struct Sender<T> {
     state: Arc<RwLock<State<T>>>,
