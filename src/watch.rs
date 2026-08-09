@@ -19,13 +19,13 @@
 //!
 //! Lifted from Zed `crates/watch/src/watch.rs` (Apache 2.0).
 //! Changes from original:
-//! - `mod error` replaced with `mod watch_error` (Podium module name)
+//! - `mod error` replaced with `use crate::watch_error::*` (flat Podium layout:
+//!   watch_error.rs is a crate-root sibling, not a submodule of watch)
 //! - `use std::future::Future` added (not needed in Zed due to glob imports)
+//! - `changed()` return type gains `+ use<'_, T>` (required by Rust 2024 edition)
 //! - `#[cfg(test)]` block removed (used Zed-specific test executor and zlog)
 
-mod watch_error;
-
-pub use watch_error::*;
+use crate::watch_error::*;
 
 use parking_lot::{RwLock, RwLockReadGuard, RwLockUpgradableReadGuard};
 use std::{
@@ -79,7 +79,7 @@ struct State<T> {
 
 /// The sending half of a watch channel.
 ///
-/// Dropping the sender closed; any pending `recv()` on
+/// Dropping the sender marks the channel as closed; any pending `recv()` on
 /// a `Receiver` will resolve to `Err(NoSenderError)`.
 pub struct Sender<T> {
     state: Arc<RwLock<State<T>>>,
@@ -208,7 +208,10 @@ impl<T> Receiver<T> {
     /// Returns a future that resolves when the sender produces a new value.
     ///
     /// Resolves to `Err(NoSenderError)` if the sender was dropped.
-    pub fn changed(&mut self) -> impl Future<Output = Result<(), NoSenderError>> {
+    ///
+    /// The `+ use<'_, T>` bound explicitly captures the anonymous lifetime of
+    /// `&mut self` in the returned opaque type, required by Rust 2024 edition.
+    pub fn changed(&mut self) -> impl Future<Output = Result<(), NoSenderError>> + use<'_, T> {
         Changed {
             receiver: self,
             pending_waker_id: None,

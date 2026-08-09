@@ -56,6 +56,7 @@
 mod colors;
 mod config;
 mod dock;
+mod onboarding;
 mod panel;
 mod panel_handle;
 mod panels;
@@ -63,6 +64,8 @@ mod ssh_config;
 mod state;
 mod watch;
 mod watch_error;
+
+use std::sync::Arc;
 
 use gpui::{
     App, AppContext as _, Context, Entity, InteractiveElement, IntoElement,
@@ -76,6 +79,7 @@ use gpui_component::{
     Root,
     Sizable as _,
     TitleBar,
+    WindowExt as _,
     button::{Button, ButtonVariants as _},
     menu::DropdownMenu as _,
     status_bar::StatusBar,
@@ -85,6 +89,7 @@ use gpui_component::{
 use colors::PodiumColorsExt as _;
 use config::{KbSourcesConfig, ProjectsConfig};
 use dock::PodiumDock;
+use onboarding::{OnboardingState, open_onboarding_sheet};
 use panel::PanelPosition;
 use panels::{AgentsPanel, FilesPanel, HealthPanel, KnowledgePanel, ReviewPanel, TerminalPanel};
 
@@ -145,12 +150,17 @@ fn first_launch_init() {
 ///
 /// `projects_config` and `kb_sources_config` are loaded from disk in `new()`
 /// and kept in sync as projects are added, loaded, and removed.
+///
+/// `onboarding_state` is `Some` while the onboarding Sheet is open, `None`
+/// otherwise. It lives here because `Sheet` is a stateless `RenderOnce`
+/// element — step state must persist between renders on the parent entity.
 struct PodiumApp {
     left_dock: Entity<PodiumDock>,
     bottom_dock: Entity<PodiumDock>,
     right_dock: Entity<PodiumDock>,
     projects_config: ProjectsConfig,
     kb_sources_config: KbSourcesConfig,
+    onboarding_state: Option<OnboardingState>,
 }
 
 impl PodiumApp {
@@ -175,8 +185,7 @@ impl PodiumApp {
             dock.add_panel(cx.new(|cx| TerminalPanel::new(cx)), cx);
         });
 
-        // Right dock: no panels in Phase 1.
-        // Available for user repositioning in Phase 2 (ADR-028).
+        // Right dock: no panels registered yet (ADR-028).
 
         // Load config from disk. first_launch_init() has already ensured the
         // files exist, so these return empty defaults at worst.
@@ -189,18 +198,111 @@ impl PodiumApp {
             right_dock,
             projects_config,
             kb_sources_config,
+            onboarding_state: None,
         }
     }
 
+    // --- Onboarding ---------------------------------------------------------
+
+    /// Open the onboarding Sheet with a fresh `OnboardingState`.
+    ///
+    /// Called directly from the "Add New Project" button via `cx.listener`.
+    fn open_onboarding(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.onboarding_state = Some(OnboardingState::new());
+        cx.notify();
+        self.open_onboarding_sheet_with_current_state(window, cx);
+    }
+
+    /// Re-open the Sheet with the current `onboarding_state`.
+    ///
+    /// Called after any navigation action mutates the state. Closures are
+    /// wrapped in `Arc::new(...)` to satisfy the `Callback` type required by
+    /// `open_onboarding_sheet` (`Arc<dyn Fn(&mut Window, &mut App) + 'static>`).
+    fn open_onboarding_sheet_with_current_state(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let state = match &self.onboarding_state {
+            Some(s) => s.clone(),
+            None => return,
+        };
+
+        let entity = cx.entity();
+
+        open_onboarding_sheet(
+            &state,
+            window,
+            cx,
+            // on_next
+            Arc::new({
+                let entity = entity.clone();
+                move |window: &mut Window, cx: &mut App| {
+                    entity.update(cx, |this, cx| {
+                        if let Some(s) = &mut this.onboarding_state {
+                            s.advance();
+                        }
+                        cx.notify();
+                        this.open_onboarding_sheet_with_current_state(window, cx);
+                    });
+                }
+            }),
+            // on_back
+            Arc::new({
+                let entity = entity.clone();
+                move |window: &mut Window, cx: &mut App| {
+                    entity.update(cx, |this, cx| {
+                        if let Some(s) = &mut this.onboarding_state {
+                            s.go_back();
+                        }
+                        cx.notify();
+                        this.open_onboarding_sheet_with_current_state(window, cx);
+                    });
+                }
+            }),
+            // on_skip — same as next: advances past the optional step
+            Arc::new({
+                let entity = entity.clone();
+                move |window: &mut Window, cx: &mut App| {
+                    entity.update(cx, |this, cx| {
+                        if let Some(s) = &mut this.onboarding_state {
+                            s.advance();
+                        }
+                        cx.notify();
+                        this.open_onboarding_sheet_with_current_state(window, cx);
+                    });
+                }
+            }),
+            // on_cancel — clear state and close the Sheet
+            Arc::new({
+                let entity = entity.clone();
+                move |window: &mut Window, cx: &mut App| {
+                    entity.update(cx, |this, cx| {
+                        this.onboarding_state = None;
+                        cx.notify();
+                    });
+                    window.close_sheet(cx);
+                }
+            }),
+            // on_confirm — project creation stub (wired in step 15)
+            Arc::new({
+                let entity = entity.clone();
+                move |window: &mut Window, cx: &mut App| {
+                    entity.update(cx, |this, cx| {
+                        // Phase 2 step 15: create project from onboarding_state,
+                        // write projects.toml, create .podium/ structure.
+                        this.onboarding_state = None;
+                        cx.notify();
+                    });
+                    window.close_sheet(cx);
+                }
+            }),
+        );
+    }
+
+    // --- Panel toggling -----------------------------------------------------
+
     /// Toggle the panel with `priority` in whichever dock owns it.
-    ///
-    /// Searches all three docks in order (left, bottom, right). On match:
-    /// - If the dock is open and the matched panel is already active → close.
-    /// - Otherwise → activate the panel and open the dock.
-    ///
-    /// Returns after the first match; a panel can only live in one dock.
-    /// If no panel with `priority` is found across all docks, this is a no-op
-    /// (should not occur in normal operation, but is safe to call speculatively).
     fn toggle_panel_by_priority(&mut self, priority: u32, cx: &mut Context<Self>) {
         for dock_entity in [&self.left_dock, &self.bottom_dock, &self.right_dock] {
             let handled = dock_entity.update(cx, |dock, cx| {
@@ -228,16 +330,16 @@ impl PodiumApp {
         }
     }
 
+    // --- Content area -------------------------------------------------------
+
     /// Render the center content area.
     ///
-    /// Branches on whether any projects are registered:
-    /// - No projects → empty state with Add button
+    /// - No projects → empty state with Add New Project button
     /// - Projects exist → content placeholder (project loading wired in step 16)
     fn render_content_area(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = cx.podium_colors();
 
         if self.projects_config.projects.is_empty() {
-            // Empty state — no projects registered yet.
             div()
                 .flex_1()
                 .h_full()
@@ -254,16 +356,13 @@ impl PodiumApp {
                         .child("No projects yet. Add your first project."),
                 )
                 .child(
-                    // Add New Project button — opens the onboarding Sheet.
-                    // Phase 2 step 7: wire OpenOnboarding action to OnboardingSheet.
                     Button::new("add-project")
                         .label("Add New Project")
-                        .on_click(cx.listener(|_this, _event, _window, cx| {
-                            cx.dispatch_action(Box::new(OpenOnboarding));
+                        .on_click(cx.listener(|this, _event, window, cx| {
+                            this.open_onboarding(window, cx);
                         })),
                 )
         } else {
-            // Projects exist — placeholder until project loading is wired (step 16).
             div()
                 .flex_1()
                 .h_full()
@@ -287,13 +386,8 @@ impl PodiumApp {
 
 impl Render for PodiumApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // Derive all colors from the active theme via PodiumColors.
-        // This is the single call site for colors — no raw rgb() literals below.
         let colors = cx.podium_colors();
 
-        // Collect tab info from all docks: (priority, tooltip, is_active).
-        // Sorted by priority so tab order matches activation_priority, which
-        // matches the panel registration order in new() (ADR-028).
         let mut tab_info: Vec<(u32, &'static str, bool)> = Vec::new();
         for dock_entity in [&self.left_dock, &self.bottom_dock, &self.right_dock] {
             let dock = dock_entity.read(cx);
@@ -312,8 +406,6 @@ impl Render for PodiumApp {
         let bottom_open = self.bottom_dock.read(cx).is_open();
         let right_open = self.right_dock.read(cx).is_open();
 
-        // Read dock sizes from the active panel's default_size().
-        // Falls back to sensible defaults when no panel is active.
         let left_width = self.left_dock.read(cx)
             .active_panel_size(cx)
             .unwrap_or(px(280.));
@@ -346,11 +438,6 @@ impl Render for PodiumApp {
                             .flex()
                             .items_center()
                             .gap_2()
-                            // [≡] Application menu — hamburger + dropdown.
-                            // AppMenuBar was attempted and abandoned: it does not
-                            // render visibly on Windows in the current
-                            // gpui-component version. Button.dropdown_menu() is
-                            // the reliable alternative.
                             .child(
                                 Button::new("app-menu")
                                     .icon(IconName::Menu)
@@ -360,7 +447,6 @@ impl Render for PodiumApp {
                                         menu.menu("Quit Podium", Box::new(Quit))
                                     }),
                             )
-                            // Podium name label.
                             .child(
                                 div()
                                     .text_color(cx.theme().foreground)
@@ -368,8 +454,7 @@ impl Render for PodiumApp {
                                     .child("Podium"),
                             )
                             // Project switcher placeholder.
-                            // Phase 2: replace with gpui-component Combobox
-                            // backed by the loaded project list.
+                            // Phase 2: replace with gpui-component Combobox.
                             .child(
                                 div()
                                     .px_2()
@@ -405,17 +490,6 @@ impl Render for PodiumApp {
                             .when(!is_active, |this| {
                                 this.text_color(colors.tab_inactive_foreground)
                             })
-                            // Tab click handler — uses cx.listener() on mouse_down
-                            // rather than dispatch_action / on_action because
-                            // on_action only fires when the element is in the
-                            // focused element's ancestor chain. With no focused
-                            // element in Phase 1, dispatched actions are silently
-                            // dropped. cx.listener() goes through the entity
-                            // system and does not require focus tree membership.
-                            //
-                            // Phase 2: wire keyboard shortcuts via the action
-                            // system using toggle_action() from PanelHandle once
-                            // a focus anchor exists in the window.
                             .on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(move |this, _: &MouseDownEvent, _window, cx| {
@@ -438,7 +512,6 @@ impl Render for PodiumApp {
                             .flex()
                             .flex_row()
                             .overflow_hidden()
-                            // Left dock — collapses to zero when closed.
                             .child(
                                 div()
                                     .when(left_open, |this| this.w(left_width))
@@ -447,12 +520,7 @@ impl Render for PodiumApp {
                                     .overflow_hidden()
                                     .child(left_dock),
                             )
-                            // Center content area — data-driven.
-                            // Empty state or content placeholder depending on
-                            // whether any projects are registered.
                             .child(content_area)
-                            // Right dock — collapses to zero when closed.
-                            // No panels registered in Phase 1 (ADR-028).
                             .child(
                                 div()
                                     .when(right_open, |this| this.w(right_width))
@@ -462,7 +530,6 @@ impl Render for PodiumApp {
                                     .child(right_dock),
                             ),
                     )
-                    // Bottom dock — collapses to zero when closed.
                     .child(
                         div()
                             .when(bottom_open, |this| this.h(bottom_height))
@@ -480,8 +547,6 @@ impl Render for PodiumApp {
                     .right("Phase 2"),
             )
             // --- Overlay layers ---------------------------------------------
-            // Required by gpui-component's Root wrapper. These are zero-cost
-            // when no dialog/sheet/notification is active.
             .children(Root::render_dialog_layer(window, cx))
             .children(Root::render_sheet_layer(window, cx))
             .children(Root::render_notification_layer(window, cx))
@@ -493,67 +558,38 @@ impl Render for PodiumApp {
 // ---------------------------------------------------------------------------
 
 fn main() {
-    // Register gpui-component's asset bundle before building the app.
-    // Required for icons and other bundled assets to render.
     let app = gpui_platform::application().with_assets(gpui_component_assets::Assets);
 
     app.run(move |cx: &mut App| {
-        // Ensure %APPDATA%\podium\ and empty config files exist before the
-        // UI starts. No-ops on all subsequent launches.
         first_launch_init();
 
-        // Initialize gpui-component — must be the first call inside app.run().
         gpui_component::init(cx);
 
-        // Apply dark theme. All three blocks are required — see module doc.
-        //
-        // The popover fix requires setting TWO separate fields (confirmed by
-        // reading the gpui-component source):
-        //
-        //   1. theme.colors.popover (ThemeColor field, Hsla)
-        //      — read by components that access cx.theme().popover directly
-        //
-        //   2. theme.tokens.popover (ThemeTokens field, ThemeToken)
-        //      — read by popover_style(cx) in styled.rs:
-        //        `self.bg(cx.theme().tokens.popover)`
-        //        This is what PopupMenu calls for its background.
-        //
-        //   ThemeToken implements From<Hsla>, so `.into()` on an Hsla works.
-        //
-        // Gruvbox Dark bg1 (#3c3836) is the target value for popups — same
-        // level as the tab bar, reads as floating above the content floor.
         {
             let theme = Theme::global_mut(cx);
             let mut colors = *ThemeColor::dark();
             let popup_bg: gpui::Hsla = gpui::rgb(0x3c3836).into();
             colors.popover = popup_bg;
             theme.colors = colors;
-            // Set tokens.popover — this is the field popover_style(cx) actually reads.
             theme.tokens.popover = popup_bg.into();
             theme.mode = ThemeMode::Dark;
         }
-        // OS-level dark appearance — required for popup/overlay render contexts
-        // to receive the correct dark window appearance on Windows.
         cx.set_window_appearance(Some(WindowAppearance::Dark));
 
         cx.on_action(|_: &Quit, cx| cx.quit());
 
-        // OpenOnboarding — stub handler until onboarding Sheet is wired in step 7.
+        // OpenOnboarding action — stub for now. The button uses cx.listener
+        // directly (build step 7 decision). Will be used by the project
+        // switcher dropdown and keyboard shortcuts in a later step.
         cx.on_action(|_: &OpenOnboarding, _cx| {});
 
         cx.spawn(async move |cx| {
             cx.open_window(
                 WindowOptions {
-                    // Use gpui-component's TitleBar window options so the
-                    // TitleBar component integrates correctly with the OS
-                    // window decorations.
                     titlebar: Some(TitleBar::title_bar_options()),
                     ..Default::default()
                 },
                 |window, cx| {
-                    // Root is mandatory for all gpui-component features:
-                    // theming, dialogs, sheets, notifications. The inner
-                    // PodiumApp view is passed to Root::new().
                     let view = cx.new(|cx| PodiumApp::new(cx));
                     cx.new(|cx| Root::new(view, window, cx))
                 },
