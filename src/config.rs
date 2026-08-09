@@ -1,13 +1,19 @@
 //! Podium configuration — projects.toml and kb_sources.toml.
 //!
-//! Handles reading and writing the two global Podium config files stored in
-//! `%APPDATA%\podium\`. These files are the source of truth for all registered
-//! projects and knowledge base sources. No database — ADR-005.
+//! Handles reading and writing the two global Podium config files. These files
+//! are the source of truth for all registered projects and knowledge base
+//! sources. No database — ADR-005.
 //!
 //! ## File locations
 //!
-//! - `%APPDATA%\podium\projects.toml`  — registered projects, MRU ordered
-//! - `%APPDATA%\podium\kb_sources.toml` — global KB source library
+//! Config directory is resolved via the `dirs` crate (cross-platform):
+//! - Windows: `%APPDATA%\podium\`
+//! - Linux:   `~/.config/podium/`
+//! - macOS:   `~/Library/Application Support/podium/`
+//!
+//! Files:
+//! - `<config_dir>/projects.toml`  — registered projects, MRU ordered
+//! - `<config_dir>/kb_sources.toml` — global KB source library
 //!
 //! ## Design notes
 //!
@@ -18,13 +24,12 @@
 //!   This matches the TOML schema directly and avoids enum serialization
 //!   complexity.
 //! - Credentials (PATs, API keys) are never stored in these files — they live
-//!   in Windows Credential Manager via the `keyring` crate (ADR-022).
+//!   in the system keychain via the `keyring` crate (ADR-022). `keyring`
+//!   abstracts platform differences: Windows Credential Manager on Windows,
+//!   Secret Service on Linux, Keychain on macOS.
 //! - `last_opened` is stored as an ISO 8601 string (`chrono::DateTime<Utc>`)
 //!   serialized via serde. MRU ordering in the project switcher is derived
 //!   from this field at read time.
-//! - Config directory is resolved from the `APPDATA` environment variable
-//!   directly — Podium targets Windows and has no need for a cross-platform
-//!   dirs crate.
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
@@ -35,14 +40,19 @@ use std::path::PathBuf;
 // Directory helpers
 // ---------------------------------------------------------------------------
 
-/// Returns the Podium config directory: `%APPDATA%\podium\` on Windows.
+/// Returns the Podium config directory, resolved cross-platform via `dirs`.
 ///
-/// Reads the `APPDATA` environment variable directly. Falls back to the
-/// current directory if `APPDATA` is not set (should not occur on Windows).
+/// | Platform | Path                                        |
+/// |----------|---------------------------------------------|
+/// | Windows  | `%APPDATA%\podium\`                         |
+/// | Linux    | `~/.config/podium/`                         |
+/// | macOS    | `~/Library/Application Support/podium/`     |
+///
+/// Falls back to `./.podium-config/` if the platform config directory cannot
+/// be determined (should not occur in practice on any supported platform).
 pub fn podium_config_dir() -> PathBuf {
-    std::env::var("APPDATA")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("."))
+    dirs::config_dir()
+        .unwrap_or_else(|| PathBuf::from(".podium-config"))
         .join("podium")
 }
 
@@ -202,8 +212,8 @@ pub struct ProjectEntry {
 ///
 /// For SSH auth, `account` is the SSH config alias (e.g. `github-personal`).
 /// For HTTPS auth, `account` is the GitHub username.
-/// The PAT for HTTPS is stored in Windows Credential Manager scoped to the
-/// project id — never in this file (ADR-022).
+/// The PAT for HTTPS is stored in the system keychain scoped to the project id
+/// via the `keyring` crate — never in this file (ADR-022).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GitConfig {
     /// Authentication method: `"ssh"` or `"https"`.
@@ -271,9 +281,10 @@ pub struct KbConnection {
 /// kb_sources = ["main-mempalace"]
 /// ```
 ///
-/// Provider API keys are stored globally in Windows Credential Manager,
-/// keyed by provider name — never per-agent or per-project (ADR-022).
-/// Custom/local endpoint URLs are stored here since they are not credentials.
+/// Provider API keys are stored globally in the system keychain via the
+/// `keyring` crate, keyed by provider name — never per-agent or per-project
+/// (ADR-022). Custom/local endpoint URLs are stored here since they are not
+/// credentials.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentEntry {
     /// Unique agent identifier within this project. Kebab-case.
@@ -317,9 +328,9 @@ pub struct AgentEntry {
 /// url = "https://xxx.supabase.co"
 /// ```
 ///
-/// Service credentials (anon keys, API tokens) are stored in Windows
-/// Credential Manager scoped to the project id — never in this file (ADR-022,
-/// ADR-025).
+/// Service credentials (anon keys, API tokens) are stored in the system
+/// keychain scoped to the project id via the `keyring` crate — never in this
+/// file (ADR-022, ADR-025).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServiceEntry {
     /// Service type: `"supabase"`, `"railway"`, `"github"`, `"custom"`, etc.
@@ -398,8 +409,8 @@ impl KbSourcesConfig {
 
 /// A single knowledge base source in the global library.
 ///
-/// Auth tokens for KB sources are stored in Windows Credential Manager
-/// scoped to the source id — never in this file (ADR-022).
+/// Auth tokens for KB sources are stored in the system keychain scoped to the
+/// source id via the `keyring` crate — never in this file (ADR-022).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KbSourceEntry {
     /// Unique source identifier. Kebab-case.

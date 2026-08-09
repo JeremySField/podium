@@ -4626,6 +4626,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "chrono",
+ "dirs",
  "gpui",
  "gpui-component",
  "gpui-component-assets",

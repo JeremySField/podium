@@ -37,3 +37,8 @@ chrono = { version = "0.4", features = ["serde"] }
 # --- Phase 2: Unique IDs ---
 # uuid: project and agent IDs in projects.toml
 uuid = { version = "1", features = ["v4"] }
+
+# --- Cross-platform config directory ---
+# dirs: resolves platform config dir — %APPDATA% on Windows, ~/.config on Linux,
+# ~/Library/Application Support on macOS. Replaces APPDATA env var read.
+dirs = "6"
