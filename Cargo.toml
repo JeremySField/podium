@@ -4,8 +4,36 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+# --- Core GPUI stack (Phase 0) ---
 gpui = { git = "https://github.com/zed-industries/zed" }
 gpui_platform = { git = "https://github.com/zed-industries/zed", features = ["font-kit"] }
 gpui-component = { git = "https://github.com/longbridge/gpui-component" }
 gpui-component-assets = { git = "https://github.com/longbridge/gpui-component" }
 anyhow = "1.0"
+
+# --- Phase 2: Config file parsing ---
+# toml: TOML serde codec — used for projects.toml, kb_sources.toml, podium_state.toml
+toml = "0.8"
+# serde: derive macros for config structs
+serde = { version = "1.0", features = ["derive"] }
+
+# --- Phase 2: Zed watch channel lift ---
+# parking_lot: RwLock used by watch.rs (Zed lift)
+parking_lot = "0.12"
+
+# --- Phase 2: Native folder picker ---
+# rfd: native OS folder browser dialog for onboarding Step 1
+rfd = "0.17"
+
+# --- Phase 2: Windows Credential Manager ---
+# keyring: stores API keys and PATs in Windows Credential Manager (ADR-022)
+# v3 is latest stable — v4 is RC only
+keyring = "3"
+
+# --- Phase 2: Timestamps ---
+# chrono: last_opened timestamps in projects.toml
+chrono = { version = "0.4", features = ["serde"] }
+
+# --- Phase 2: Unique IDs ---
+# uuid: project and agent IDs in projects.toml
+uuid = { version = "1", features = ["v4"] }

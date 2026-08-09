@@ -1,8 +1,8 @@
-//! Podium application shell — Phase 1.
+//! Podium application shell — Phase 1 complete, Phase 2 in progress.
 //!
 //! `PodiumApp` is the root GPUI view. It holds three `PodiumDock` entities
-//! (left, bottom, right) and renders the full Phase 1 shell: TitleBar,
-//! tab bar, content area with docks, StatusBar, and overlay layers.
+//! (left, bottom, right) and renders the full shell: TitleBar, tab bar,
+//! content area with docks, StatusBar, and overlay layers.
 //!
 //! ## Dark theme — three calls required
 //!
@@ -40,19 +40,15 @@
 //! - `tab_bar`        — tab bar background
 //! - `overlay`        — modal overlay background
 //!
-//! ## Phase 1 scope
+//! ## Phase 1 complete — bugs fixed in Phase 2 start
 //!
-//! - Dark theme applied via gpui-component + OS appearance
-//! - TitleBar: hamburger app menu, "Podium" label, project placeholder
-//! - Tab bar: six tabs wired to dock open/close (Files through Health)
-//! - Left dock with five stub panels; bottom dock with Terminal stub
-//! - StatusBar at bottom
-//! - Overlay layers: dialog, sheet, notification
+//! - `.relative()` added to dock render div (resize handle anchor fix)
+//! - Hard-coded dock widths replaced with `active_panel_size()` calls
 //!
 //! ## Deferred to later phases
 //!
 //! - Phase 2: project switcher Combobox in TitleBar (replaces placeholder)
-//! - Phase 2: dock resize handles wired (cursor only in Phase 1)
+//! - Phase 2: dock resize handle drag wiring
 //! - Phase 2: dock open/close state persisted to config
 //! - Phase 2: panel repositioning between docks
 //! - Phase 10: full JSON-driven theme system
@@ -62,6 +58,9 @@ mod dock;
 mod panel;
 mod panel_handle;
 mod panels;
+mod ssh_config;
+mod watch;
+mod watch_error;
 
 use gpui::{
     App, AppContext as _, Context, Entity, InteractiveElement, IntoElement,
@@ -202,6 +201,18 @@ impl Render for PodiumApp {
         let bottom_open = self.bottom_dock.read(cx).is_open();
         let right_open = self.right_dock.read(cx).is_open();
 
+        // Read dock sizes from the active panel's default_size().
+        // Falls back to sensible defaults when no panel is active.
+        let left_width = self.left_dock.read(cx)
+            .active_panel_size(cx)
+            .unwrap_or(px(280.));
+        let right_width = self.right_dock.read(cx)
+            .active_panel_size(cx)
+            .unwrap_or(px(280.));
+        let bottom_height = self.bottom_dock.read(cx)
+            .active_panel_size(cx)
+            .unwrap_or(px(240.));
+
         let left_dock = self.left_dock.clone();
         let bottom_dock = self.bottom_dock.clone();
         let right_dock = self.right_dock.clone();
@@ -314,18 +325,16 @@ impl Render for PodiumApp {
                             .flex()
                             .flex_row()
                             .overflow_hidden()
-                            // Left dock — fixed width, collapses to zero when closed.
-                            // Phase 2: replace px(280.) with dock.active_panel_size(cx)
-                            // once resize handles are wired.
+                            // Left dock — collapses to zero when closed.
                             .child(
                                 div()
-                                    .when(left_open, |this| this.w(px(280.)))
+                                    .when(left_open, |this| this.w(left_width))
                                     .when(!left_open, |this| this.w(px(0.)))
                                     .h_full()
                                     .overflow_hidden()
                                     .child(left_dock),
                             )
-                            // Center content area — empty placeholder for Phase 1.
+                            // Center content area — empty placeholder.
                             // Phase 6: replaced by the Editor panel.
                             .child(
                                 div()
@@ -342,23 +351,21 @@ impl Render for PodiumApp {
                                             .child("Podium"),
                                     ),
                             )
-                            // Right dock — fixed width, collapses to zero when closed.
+                            // Right dock — collapses to zero when closed.
                             // No panels registered in Phase 1 (ADR-028).
-                            // Phase 2: replace px(280.) with dock.active_panel_size(cx).
                             .child(
                                 div()
-                                    .when(right_open, |this| this.w(px(280.)))
+                                    .when(right_open, |this| this.w(right_width))
                                     .when(!right_open, |this| this.w(px(0.)))
                                     .h_full()
                                     .overflow_hidden()
                                     .child(right_dock),
                             ),
                     )
-                    // Bottom dock — fixed height, collapses to zero when closed.
-                    // Phase 2: replace px(240.) with dock.active_panel_size(cx).
+                    // Bottom dock — collapses to zero when closed.
                     .child(
                         div()
-                            .when(bottom_open, |this| this.h(px(240.)))
+                            .when(bottom_open, |this| this.h(bottom_height))
                             .when(!bottom_open, |this| this.h(px(0.)))
                             .w_full()
                             .overflow_hidden()
@@ -370,7 +377,7 @@ impl Render for PodiumApp {
                 StatusBar::new()
                     .bg(colors.title_bar_background)
                     .left("Podium")
-                    .right("Phase 1"),
+                    .right("Phase 2"),
             )
             // --- Overlay layers ---------------------------------------------
             // Required by gpui-component's Root wrapper. These are zero-cost

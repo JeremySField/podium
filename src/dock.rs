@@ -19,8 +19,7 @@
 //! - Phase 2: panel repositioning between docks
 //! - Phase 2: settings observation
 //! - Phase 2: focus-follows-mouse
-//! - Phase 2: resize handle drag wiring (fix `.absolute()` positioning too —
-//!   see note in `Render` impl)
+//! - Phase 2: resize handle drag wiring
 
 use std::sync::Arc;
 
@@ -326,16 +325,12 @@ impl Render for PodiumDock {
             let panel_view: AnyView = entry.panel.to_any();
             let position = self.position;
 
-            // Phase 2 note: the resize handle below uses `.absolute()` for
-            // positioning. Absolute children anchor to the nearest ancestor
-            // with `.relative()`. This parent div does not call `.relative()`,
-            // so in Phase 1 the handle may anchor to the window root rather
-            // than the dock edge. This is harmless in Phase 1 (handle is
-            // cursor-only, no visual rendering). Fix in Phase 2 when drag
-            // wiring is added: add `.relative()` to this outer div.
             div()
                 .id("dock")
                 .track_focus(&self.focus_handle(cx))
+                // .relative() is required: the absolute-positioned resize handle
+                // children must anchor to this div, not the window root.
+                .relative()
                 .flex()
                 .overflow_hidden()
                 // Axis orientation: Left/Right docks are vertical columns,
@@ -362,12 +357,8 @@ impl Render for PodiumDock {
                         .size_full()
                         .child(panel_view.cached(StyleRefinement::default().v_flex().size_full())),
                 )
-                // Resize handle — renders the correct resize cursor but has
-                // no drag wiring in Phase 1.
-                //
-                // Phase 2: wire on_drag to update PanelEntry.size and call
-                // cx.notify(). Also add .relative() to the parent div above
-                // so this absolute child anchors to the dock edge correctly.
+                // Resize handle — renders the correct resize cursor.
+                // Phase 2: wire on_drag to update PanelEntry.size and call cx.notify().
                 .child(match position {
                     PanelPosition::Left => div()
                         .id("resize-handle")
