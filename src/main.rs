@@ -83,6 +83,7 @@ use gpui_component::{
 };
 
 use colors::PodiumColorsExt as _;
+use config::{KbSourcesConfig, ProjectsConfig};
 use dock::PodiumDock;
 use panel::PanelPosition;
 use panels::{AgentsPanel, FilesPanel, HealthPanel, KnowledgePanel, ReviewPanel, TerminalPanel};
@@ -91,7 +92,7 @@ use panels::{AgentsPanel, FilesPanel, HealthPanel, KnowledgePanel, ReviewPanel, 
 // Global actions
 // ---------------------------------------------------------------------------
 
-actions!(podium, [Quit]);
+actions!(podium, [Quit, OpenOnboarding]);
 
 // ---------------------------------------------------------------------------
 // First launch init
@@ -139,12 +140,17 @@ fn first_launch_init() {
 
 /// Root view for the Podium application.
 ///
-/// Owns the three docks (left, bottom, right) and renders the complete shell.
+/// Owns the three docks (left, bottom, right) and the loaded config state.
 /// Panels are registered into their default docks in `new()` per ADR-028.
+///
+/// `projects_config` and `kb_sources_config` are loaded from disk in `new()`
+/// and kept in sync as projects are added, loaded, and removed.
 struct PodiumApp {
     left_dock: Entity<PodiumDock>,
     bottom_dock: Entity<PodiumDock>,
     right_dock: Entity<PodiumDock>,
+    projects_config: ProjectsConfig,
+    kb_sources_config: KbSourcesConfig,
 }
 
 impl PodiumApp {
@@ -172,7 +178,18 @@ impl PodiumApp {
         // Right dock: no panels in Phase 1.
         // Available for user repositioning in Phase 2 (ADR-028).
 
-        Self { left_dock, bottom_dock, right_dock }
+        // Load config from disk. first_launch_init() has already ensured the
+        // files exist, so these return empty defaults at worst.
+        let projects_config = ProjectsConfig::load().unwrap_or_default();
+        let kb_sources_config = KbSourcesConfig::load().unwrap_or_default();
+
+        Self {
+            left_dock,
+            bottom_dock,
+            right_dock,
+            projects_config,
+            kb_sources_config,
+        }
     }
 
     /// Toggle the panel with `priority` in whichever dock owns it.
@@ -208,6 +225,58 @@ impl PodiumApp {
                 cx.notify();
                 return;
             }
+        }
+    }
+
+    /// Render the center content area.
+    ///
+    /// Branches on whether any projects are registered:
+    /// - No projects → empty state with Add button
+    /// - Projects exist → content placeholder (project loading wired in step 16)
+    fn render_content_area(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let colors = cx.podium_colors();
+
+        if self.projects_config.projects.is_empty() {
+            // Empty state — no projects registered yet.
+            div()
+                .flex_1()
+                .h_full()
+                .bg(colors.content_background)
+                .flex()
+                .flex_col()
+                .items_center()
+                .justify_center()
+                .gap_4()
+                .child(
+                    div()
+                        .text_color(cx.theme().muted_foreground)
+                        .text_sm()
+                        .child("No projects yet. Add your first project."),
+                )
+                .child(
+                    // Add New Project button — opens the onboarding Sheet.
+                    // Phase 2 step 7: wire OpenOnboarding action to OnboardingSheet.
+                    Button::new("add-project")
+                        .label("Add New Project")
+                        .on_click(cx.listener(|_this, _event, _window, cx| {
+                            cx.dispatch_action(Box::new(OpenOnboarding));
+                        })),
+                )
+        } else {
+            // Projects exist — placeholder until project loading is wired (step 16).
+            div()
+                .flex_1()
+                .h_full()
+                .bg(colors.content_background)
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(
+                    div()
+                        .text_color(cx.theme().muted_foreground)
+                        .text_sm()
+                        .child("Podium"),
+                )
         }
     }
 }
@@ -258,6 +327,8 @@ impl Render for PodiumApp {
         let left_dock = self.left_dock.clone();
         let bottom_dock = self.bottom_dock.clone();
         let right_dock = self.right_dock.clone();
+
+        let content_area = self.render_content_area(cx);
 
         div()
             .size_full()
@@ -376,23 +447,10 @@ impl Render for PodiumApp {
                                     .overflow_hidden()
                                     .child(left_dock),
                             )
-                            // Center content area — empty placeholder.
-                            // Phase 6: replaced by the Editor panel.
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .h_full()
-                                    .bg(colors.content_background)
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .child(
-                                        div()
-                                            .text_color(cx.theme().muted_foreground)
-                                            .text_sm()
-                                            .child("Podium"),
-                                    ),
-                            )
+                            // Center content area — data-driven.
+                            // Empty state or content placeholder depending on
+                            // whether any projects are registered.
+                            .child(content_area)
                             // Right dock — collapses to zero when closed.
                             // No panels registered in Phase 1 (ADR-028).
                             .child(
@@ -479,6 +537,9 @@ fn main() {
         cx.set_window_appearance(Some(WindowAppearance::Dark));
 
         cx.on_action(|_: &Quit, cx| cx.quit());
+
+        // OpenOnboarding — stub handler until onboarding Sheet is wired in step 7.
+        cx.on_action(|_: &OpenOnboarding, _cx| {});
 
         cx.spawn(async move |cx| {
             cx.open_window(
