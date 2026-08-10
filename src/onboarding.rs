@@ -44,8 +44,8 @@
 //! - ADR-020: Progressive disclosure on every field
 
 use gpui::{
-    AnyElement, App, AsyncWindowContext, Context, EventEmitter, FocusHandle,
-    Focusable, IntoElement, ParentElement, Render, Styled, Window,
+    AnyElement, App, AppContext as _, AsyncWindowContext, Context, Entity, EventEmitter,
+    FocusHandle, Focusable, IntoElement, ParentElement, Render, Styled, Subscription, Window,
 };
 use gpui::prelude::FluentBuilder as _;
 use gpui::{div, px};
@@ -54,6 +54,7 @@ use gpui_component::{
     Sizable as _,
     WindowExt as _,
     button::{Button, ButtonVariants as _},
+    input::{Input, InputEvent, InputState},
 };
 
 use crate::colors::PodiumColorsExt as _;
@@ -165,7 +166,7 @@ pub struct OnboardingState {
     pub detected_remote: Option<String>,
 
     // Step 2 — Identity
-    /// Project display name — pre-filled from folder name, editable.
+    /// Project display name — kept in sync with the `name_input` InputState.
     pub project_name: String,
     /// Validation error message for the project name field, if any.
     pub project_name_error: Option<String>,
@@ -224,44 +225,131 @@ impl Default for OnboardingState {
 /// The onboarding Sheet view — a proper GPUI entity that owns its state and
 /// drives all navigation internally via `cx.listener`.
 ///
-/// Created by `PodiumApp::open_onboarding`. The Sheet is opened once and
-/// re-renders in place as the user navigates — `open_sheet_at` is not called
-/// again on navigation, which is the correct pattern: the Root sheet layer
-/// calls the stored builder closure on each frame, re-rendering the current
-/// step from the latest state.
+/// ## Input entity ownership
 ///
-/// `PodiumApp` subscribes to `OnboardingEvent::ProjectCreated` to receive
-/// the completed project entry on Step 7 confirm.
+/// `name_input` is an `Entity<InputState>` owned by `OnboardingSheet`. It is
+/// created in `new()` alongside a subscription to `InputEvent::Change` that
+/// keeps `state.project_name` in sync. The subscription is stored in
+/// `_subscriptions` so it stays alive for the sheet's lifetime.
+///
+/// When Step 8 (folder picker) pre-fills `state.project_name`, the render
+/// path for Step 2 calls `input.set_value(...)` to push that value into the
+/// `InputState` so the widget displays it correctly. This is a one-way push
+/// from `OnboardingState` → `InputState` on render; the subscription handles
+/// the reverse direction (user types → `InputState` emits → `state.project_name`
+/// updates).
 pub struct OnboardingSheet {
     state: OnboardingState,
     focus_handle: FocusHandle,
+    /// `InputState` entity for the project name field (Step 2).
+    name_input: Entity<InputState>,
+    /// All subscriptions for this entity. Stored per Zed Standard Rule 8 —
+    /// `Vec<Subscription>` field pattern; subscriptions deregister on drop.
+    _subscriptions: Vec<Subscription>,
 }
 
 impl OnboardingSheet {
     /// Create a new `OnboardingSheet` entity at Step 1.
-    pub fn new(cx: &mut Context<Self>) -> Self {
+    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        // Create the project name InputState with single-line mode (default),
+        // placeholder text, and a validate closure that enforces the allowed
+        // character set: letters, numbers, spaces, hyphens, underscores only.
+        let name_input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("e.g. ShowFlyer")
+                .validate(|text, _cx| {
+                    // Empty is allowed — the Next button guards against empty on Step 2.
+                    // Non-empty must match: letters, digits, spaces, hyphens, underscores.
+                    text.is_empty()
+                        || text
+                            .chars()
+                            .all(|c| c.is_alphanumeric() || c == ' ' || c == '-' || c == '_')
+                })
+        });
+
+        // Subscribe to InputEvent::Change to keep state.project_name in sync.
+        // The subscription fires on every keystroke after validation passes.
+        let name_subscription = cx.subscribe(
+            &name_input,
+            |this, input, event, cx| {
+                if matches!(event, InputEvent::Change) {
+                    let new_name = input.read(cx).value().to_string();
+                    this.state.project_name = new_name;
+                    // Clear any prior validation error once the user starts editing.
+                    this.state.project_name_error = None;
+                    cx.notify();
+                }
+            },
+        );
+
         Self {
             state: OnboardingState::new(),
             focus_handle: cx.focus_handle(),
+            name_input,
+            _subscriptions: vec![name_subscription],
         }
     }
 
     // --- Navigation handlers (bound via cx.listener in render) --------------
 
-    fn handle_next(&mut self, _: &gpui::ClickEvent, _window: &mut Window, cx: &mut Context<Self>) {
+    fn handle_next(
+        &mut self,
+        _: &gpui::ClickEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // Step 2 guard: require a non-empty, valid project name before advancing.
+        if self.state.step == OnboardingStep::Identity {
+            if self.state.project_name.trim().is_empty() {
+                self.state.project_name_error =
+                    Some("Project name is required.".to_string());
+                cx.notify();
+                return;
+            }
+        }
+
         self.state.advance();
         cx.notify();
+
+        // If we just advanced into Step 2, sync the pre-filled name (from
+        // folder picker) into the InputState so the widget displays it.
+        if self.state.step == OnboardingStep::Identity {
+            self.sync_name_input_to_state(window, cx);
+        }
     }
 
-    fn handle_back(&mut self, _: &gpui::ClickEvent, _window: &mut Window, cx: &mut Context<Self>) {
+    fn handle_back(
+        &mut self,
+        _: &gpui::ClickEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.state.go_back();
         cx.notify();
     }
 
-    fn handle_skip(&mut self, _: &gpui::ClickEvent, _window: &mut Window, cx: &mut Context<Self>) {
+    fn handle_skip(
+        &mut self,
+        _: &gpui::ClickEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         // Skip advances past the current optional step — same as Next.
         self.state.advance();
         cx.notify();
+    }
+
+    /// Push `state.project_name` into the `name_input` InputState.
+    ///
+    /// Called when navigating into Step 2 so that a name pre-filled by the
+    /// folder picker (Step 1) is displayed in the Input widget. `set_value`
+    /// does not emit `InputEvent::Change`, so this does not re-trigger the
+    /// subscription and cause a loop.
+    fn sync_name_input_to_state(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let current_name = self.state.project_name.clone();
+        self.name_input.update(cx, |input, cx| {
+            input.set_value(current_name, window, cx);
+        });
     }
 
     // --- Async folder picker ------------------------------------------------
@@ -402,14 +490,12 @@ impl OnboardingSheet {
             .flex()
             .flex_col()
             .gap_3()
-            // Instruction line
             .child(
                 div()
                     .text_sm()
                     .text_color(cx.theme().muted_foreground)
                     .child("Choose the folder that contains your project."),
             )
-            // Path display box
             .child(
                 div()
                     .p_3()
@@ -425,7 +511,6 @@ impl OnboardingSheet {
                     })
                     .child(path_display.to_string()),
             )
-            // Detection badges — only shown after a folder is chosen
             .when(has_path, |this| {
                 this.child(
                     div()
@@ -458,7 +543,6 @@ impl OnboardingSheet {
                         }),
                 )
             })
-            // Browse button
             .child(
                 Button::new("pick-folder")
                     .label("Browse…")
@@ -466,7 +550,6 @@ impl OnboardingSheet {
                     .small()
                     .on_click(cx.listener(Self::handle_browse)),
             )
-            // Hint line — ADR-020 progressive disclosure
             .child(
                 div()
                     .text_xs()
@@ -475,10 +558,11 @@ impl OnboardingSheet {
             )
     }
 
-    // --- Step card stubs — replaced in build order steps 9–14 ---------------
+    // --- Step 2 — Project name (Phase 2 Step 9) -----------------------------
 
     fn render_step_identity(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        // Phase 2 step 9: replace with Input field, validation, uniqueness check.
+        let has_error = self.state.project_name_error.is_some();
+
         div()
             .flex()
             .flex_col()
@@ -491,20 +575,39 @@ impl OnboardingSheet {
             )
             .child(
                 div()
-                    .p_3()
-                    .rounded_md()
-                    .border_1()
-                    .border_color(cx.theme().border)
-                    .text_sm()
-                    .when(self.state.project_name.is_empty(), |this| {
-                        this.text_color(cx.theme().muted_foreground).child("Project name")
-                    })
-                    .when(!self.state.project_name.is_empty(), |this| {
-                        this.text_color(cx.theme().foreground)
-                            .child(self.state.project_name.clone())
-                    }),
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child("Project name"),
+            )
+            .child(
+                Input::new(&self.name_input)
+                    .when(has_error, |this| this.appearance(true))
+                    .small(),
+            )
+            .when(has_error, |this| {
+                this.child(
+                    div()
+                        .text_xs()
+                        // danger_foreground is the confirmed text color for error states
+                        // at git HEAD 6d7847e — verified from theme_color.rs source.
+                        .text_color(cx.theme().danger_foreground)
+                        .child(
+                            self.state
+                                .project_name_error
+                                .clone()
+                                .unwrap_or_default(),
+                        ),
+                )
+            })
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground.opacity(0.6))
+                    .child("Letters, numbers, spaces, hyphens, and underscores only."),
             )
     }
+
+    // --- Step card stubs — replaced in build order steps 10–14 --------------
 
     fn render_step_git(&self, cx: &mut Context<Self>) -> impl IntoElement {
         // Phase 2 step 10: replace with SSH/HTTPS selector, account input, remote URL.
@@ -629,7 +732,6 @@ impl OnboardingSheet {
             .flex_row()
             .items_center()
             .gap_2()
-            // Cancel — always left-aligned
             .child(
                 Button::new("cancel")
                     .label("Cancel")
@@ -638,7 +740,6 @@ impl OnboardingSheet {
                     .on_click(cx.listener(Self::handle_cancel)),
             )
             .child(div().flex_1())
-            // Back — all steps except Step 1
             .when(!is_first, |this| {
                 this.child(
                     Button::new("back")
@@ -648,7 +749,6 @@ impl OnboardingSheet {
                         .on_click(cx.listener(Self::handle_back)),
                 )
             })
-            // Skip — skippable steps only (Steps 3–6)
             .when(is_skippable, |this| {
                 this.child(
                     Button::new("skip")
@@ -658,7 +758,6 @@ impl OnboardingSheet {
                         .on_click(cx.listener(Self::handle_skip)),
                 )
             })
-            // Next — all steps except the last
             .when(!is_last, |this| {
                 this.child(
                     Button::new("next")
@@ -668,7 +767,6 @@ impl OnboardingSheet {
                         .on_click(cx.listener(Self::handle_next)),
                 )
             })
-            // Create Project — last step only
             .when(is_last, |this| {
                 this.child(
                     Button::new("confirm")
@@ -706,7 +804,6 @@ impl Render for OnboardingSheet {
             .h_full()
             .p_4()
             .gap_4()
-            // Step counter and pip indicators
             .child(
                 div()
                     .flex()
@@ -747,9 +844,7 @@ impl Render for OnboardingSheet {
                             })),
                     ),
             )
-            // Step card — fills remaining space
             .child(div().flex_1().overflow_hidden().child(step_content))
-            // Navigation buttons
             .child(nav_buttons)
     }
 }

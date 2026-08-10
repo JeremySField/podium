@@ -233,7 +233,9 @@ impl PodiumApp {
     /// method is called exactly once per onboarding flow — `open_sheet_at` is
     /// not called again on navigation steps.
     fn open_onboarding(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let sheet_entity = cx.new(OnboardingSheet::new);
+        // OnboardingSheet::new requires &mut Window for InputState::new (blink
+        // cursor subscription). Capture window in the closure.
+        let sheet_entity = cx.new(|cx| OnboardingSheet::new(window, cx));
 
         // Subscribe to the ProjectCreated event before opening the Sheet so
         // no event can be missed between creation and subscription.
