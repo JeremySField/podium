@@ -44,7 +44,7 @@
 //! - ADR-020: Progressive disclosure on every field
 
 use gpui::{
-    AnyElement, App, Context, EventEmitter, FocusHandle,
+    AnyElement, App, AsyncWindowContext, Context, EventEmitter, FocusHandle,
     Focusable, IntoElement, ParentElement, Render, Styled, Window,
 };
 use gpui::prelude::FluentBuilder as _;
@@ -264,6 +264,85 @@ impl OnboardingSheet {
         cx.notify();
     }
 
+    // --- Async folder picker ------------------------------------------------
+
+    /// Open the OS native folder picker and apply the result to state.
+    ///
+    /// Uses `window.spawn` to get an `AsyncWindowContext` after the await
+    /// point — the Zed standard pattern for async actions on GPUI entities.
+    /// A `WeakEntity` is captured so the async block does not hold a strong
+    /// reference across the await (Standing Rule 9 — Zed Standard).
+    ///
+    /// On folder selection:
+    /// - `state.folder_path` is set to the absolute path string
+    /// - `.git/` presence is detected → `state.git_detected`
+    /// - `.podium/` presence is detected → `state.podium_detected`
+    /// - If `.git/config` is present, the `url =` line under `[remote "origin"]`
+    ///   is parsed into `state.detected_remote`
+    /// - `state.project_name` is pre-filled from the last path component
+    ///   (only if the field is still empty — does not overwrite user edits)
+    /// - `cx.notify()` triggers re-render
+    ///
+    /// If the user dismisses the picker (`None` returned), state is unchanged.
+    fn handle_browse(
+        &mut self,
+        _: &gpui::ClickEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let entity = cx.weak_entity();
+        window.spawn(cx, async move |cx: &mut AsyncWindowContext| {
+            let folder = rfd::AsyncFileDialog::new().pick_folder().await;
+
+            let Some(folder) = folder else { return; };
+
+            let path = folder.path().to_string_lossy().to_string();
+
+            // Perform all filesystem inspection synchronously — these are
+            // cheap metadata checks, not I/O-heavy operations.
+            let folder_path = std::path::Path::new(&path);
+            let git_detected = folder_path.join(".git").is_dir();
+            let podium_detected = folder_path.join(".podium").is_dir();
+
+            // Parse the remote URL from .git/config if the repo is present.
+            // We look for the url = line under [remote "origin"]. If parsing
+            // fails for any reason we silently produce None — this is advisory
+            // data for pre-filling Step 3, not a required field.
+            let detected_remote = if git_detected {
+                parse_git_remote_url(&folder_path.join(".git").join("config"))
+            } else {
+                None
+            };
+
+            // Pre-fill the project name from the last path component.
+            // Use to_string_lossy so non-UTF8 paths degrade gracefully.
+            let folder_name = folder_path
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_default();
+
+            cx.update(|_window, cx| {
+                entity
+                    .upgrade()
+                    .map(|sheet| {
+                        sheet.update(cx, |this, cx| {
+                            this.state.folder_path = Some(path);
+                            this.state.git_detected = git_detected;
+                            this.state.podium_detected = podium_detected;
+                            this.state.detected_remote = detected_remote;
+                            // Only pre-fill if the user has not already typed a name.
+                            if this.state.project_name.is_empty() {
+                                this.state.project_name = folder_name;
+                            }
+                            cx.notify();
+                        })
+                    });
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     fn handle_cancel(
         &mut self,
         _: &gpui::ClickEvent,
@@ -310,38 +389,27 @@ impl OnboardingSheet {
         }
     }
 
-    // --- Step card stubs — replaced in build order steps 8–14 ---------------
+    // --- Step 1 — Folder picker (Phase 2 Step 8) ----------------------------
 
     fn render_step_folder(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        // Phase 2 step 8: replace with rfd folder picker and .git/.podium detection.
-        //
-        // The Browse button will use window.spawn(cx, async move |mut cx: &mut AsyncWindowContext| {
-        //     let folder = rfd::AsyncFileDialog::new().pick_folder().await;
-        //     if let Some(folder) = folder {
-        //         let path = folder.path().to_string_lossy().to_string();
-        //         cx.update(|window, cx| {
-        //             entity.update(cx, |this, cx| {
-        //                 this.state.folder_path = Some(path);
-        //                 // run .git/.podium detection here
-        //                 cx.notify();
-        //             }).ok();
-        //         }).ok();
-        //     }
-        // }).detach();
         let path_display = self.state.folder_path
             .as_deref()
             .unwrap_or("No folder selected");
+
+        let has_path = self.state.folder_path.is_some();
 
         div()
             .flex()
             .flex_col()
             .gap_3()
+            // Instruction line
             .child(
                 div()
                     .text_sm()
                     .text_color(cx.theme().muted_foreground)
                     .child("Choose the folder that contains your project."),
             )
+            // Path display box
             .child(
                 div()
                     .p_3()
@@ -349,17 +417,65 @@ impl OnboardingSheet {
                     .border_1()
                     .border_color(cx.theme().border)
                     .text_sm()
-                    .text_color(cx.theme().muted_foreground)
+                    .when(!has_path, |this| {
+                        this.text_color(cx.theme().muted_foreground)
+                    })
+                    .when(has_path, |this| {
+                        this.text_color(cx.theme().foreground)
+                    })
                     .child(path_display.to_string()),
             )
+            // Detection badges — only shown after a folder is chosen
+            .when(has_path, |this| {
+                this.child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .gap_2()
+                        .when(self.state.git_detected, |this| {
+                            this.child(
+                                div()
+                                    .px_2()
+                                    .py(px(2.))
+                                    .rounded(px(4.))
+                                    .text_xs()
+                                    .bg(cx.theme().secondary)
+                                    .text_color(cx.theme().secondary_foreground)
+                                    .child("git repo detected"),
+                            )
+                        })
+                        .when(self.state.podium_detected, |this| {
+                            this.child(
+                                div()
+                                    .px_2()
+                                    .py(px(2.))
+                                    .rounded(px(4.))
+                                    .text_xs()
+                                    .bg(cx.theme().secondary)
+                                    .text_color(cx.theme().secondary_foreground)
+                                    .child(".podium detected"),
+                            )
+                        }),
+                )
+            })
+            // Browse button
             .child(
                 Button::new("pick-folder")
                     .label("Browse…")
                     .outline()
-                    .small(),
-                // Phase 2 step 8: .on_click(cx.listener(Self::handle_browse))
+                    .small()
+                    .on_click(cx.listener(Self::handle_browse)),
+            )
+            // Hint line — ADR-020 progressive disclosure
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground.opacity(0.6))
+                    .child("The folder you choose becomes the project root. It does not need to be empty."),
             )
     }
+
+    // --- Step card stubs — replaced in build order steps 9–14 ---------------
 
     fn render_step_identity(&self, cx: &mut Context<Self>) -> impl IntoElement {
         // Phase 2 step 9: replace with Input field, validation, uniqueness check.
@@ -636,4 +752,46 @@ impl Render for OnboardingSheet {
             // Navigation buttons
             .child(nav_buttons)
     }
+}
+
+// ---------------------------------------------------------------------------
+// Git config parsing
+// ---------------------------------------------------------------------------
+
+/// Parse the remote origin URL from a `.git/config` file.
+///
+/// Looks for the `url =` key under the `[remote "origin"]` section.
+/// Returns `None` if the file cannot be read, the section is absent,
+/// or the `url` line is malformed. All failures are silent — this data
+/// is advisory pre-fill for Step 3, not a required field.
+fn parse_git_remote_url(git_config_path: &std::path::Path) -> Option<String> {
+    let content = std::fs::read_to_string(git_config_path).ok()?;
+
+    let mut in_origin_section = false;
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+
+        if trimmed == r#"[remote "origin"]"# {
+            in_origin_section = true;
+            continue;
+        }
+
+        // A new section header ends the origin block.
+        if trimmed.starts_with('[') {
+            in_origin_section = false;
+            continue;
+        }
+
+        if in_origin_section {
+            if let Some(rest) = trimmed.strip_prefix("url =") {
+                let url = rest.trim().to_string();
+                if !url.is_empty() {
+                    return Some(url);
+                }
+            }
+        }
+    }
+
+    None
 }
