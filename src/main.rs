@@ -4,41 +4,26 @@
 //! (left, bottom, right) and renders the full shell: TitleBar, tab bar,
 //! content area with docks, StatusBar, and overlay layers.
 //!
-//! ## Dark theme — three calls required
+//! ## Theme system
 //!
-//! gpui-component dark mode requires all three of the following in `app.run()`,
-//! in this order. Any subset produces either a light palette, a missing mode
-//! flag, or OS-level light popup contexts:
+//! Podium ships a Gruvbox Dark theme as `assets/themes/gruvbox-dark.json`,
+//! embedded at compile time via `include_str!`. At startup:
 //!
-//! ```rust
-//! theme.colors = *ThemeColor::dark();          // swap the color palette
-//! theme.mode = ThemeMode::Dark;                // set the mode flag
-//! cx.set_window_appearance(Some(Dark));        // OS-level dark context
-//! ```
+//! 1. `gpui_component::init(cx)` — initialises the ThemeRegistry with the
+//!    built-in default light/dark themes
+//! 2. `ThemeRegistry::load_themes_from_str` — registers the Gruvbox Dark theme
+//!    in the `themes` map under the name "Gruvbox Dark"
+//! 3. Look up "Gruvbox Dark" from the registry and call `Theme::apply_config`
+//!    directly — this is required because `load_themes_from_str` does NOT
+//!    update `default_themes`, so `Theme::change(Dark)` would still pick up
+//!    "Default Dark" as the dark theme. Direct `apply_config` bypasses this.
+//! 4. `cx.set_window_appearance(Some(WindowAppearance::Dark))` — OS-level dark
 //!
-//! ## Popup/dropdown theming — two fields required
+//! `apply_config` sets both `ThemeColor` fields and `ThemeTokens` in one pass
+//! via the `apply_color!` / `apply_background_color!` macros in `schema.rs`.
 //!
-//! gpui-component's `PopupMenu` renders its background via `popover_style(cx)`
-//! which reads `cx.theme().tokens.popover` (a `ThemeToken`) — NOT
-//! `cx.theme().colors.popover` (an `Hsla`). Both must be set to get a dark
-//! dropdown background:
-//!
-//! ```rust
-//! colors.popover = dark_color;                 // sets ThemeColor.popover
-//! theme.tokens.popover = dark_color.into();    // sets ThemeTokens.popover (what popover_style reads)
-//! ```
-//!
-//! `ThemeToken` implements `From<Hsla>` so `.into()` works directly.
-//!
-//! ## ThemeColor fields of note (confirmed from theme_color.rs source)
-//!
-//! - `popover`        — dropdown/popup Hsla color
-//! - `popover_foreground` — dropdown/popup text
-//! - `title_bar`      — title bar background
-//! - `title_bar_border`
-//! - `status_bar`     — status bar background
-//! - `tab_bar`        — tab bar background
-//! - `overlay`        — modal overlay background
+//! Phase 10: add additional themes (One Dark, Solarized, etc.) and a theme
+//! selector in Settings.
 //!
 //! ## Onboarding architecture
 //!
@@ -46,11 +31,6 @@
 //! all navigation internally via `cx.listener`. `PodiumApp` creates the entity,
 //! opens the Sheet once, and subscribes to `OnboardingEvent::ProjectCreated`.
 //! No `Arc<dyn Fn>` callbacks — see `onboarding.rs` for the full pattern.
-//!
-//! The active sheet entity is held in `onboarding_sheet: Option<Entity<OnboardingSheet>>`.
-//! It is set when the Sheet opens and cleared by the subscription handler on
-//! project creation, or by the cancel path (Sheet close drops the entity ref
-//! when `PodiumApp` re-renders with no active sheet).
 //!
 //! ## Phase 1 complete — bugs fixed in Phase 2 start
 //!
@@ -63,7 +43,7 @@
 //! - Phase 2: dock resize handle drag wiring
 //! - Phase 2: dock open/close state persisted to config
 //! - Phase 2: panel repositioning between docks
-//! - Phase 10: full JSON-driven theme system
+//! - Phase 10: additional theme choices (One Dark, Solarized, etc.)
 
 mod colors;
 mod config;
@@ -95,7 +75,7 @@ use gpui_component::{
     button::{Button, ButtonVariants as _},
     menu::DropdownMenu as _,
     status_bar::StatusBar,
-    theme::{Theme, ThemeColor, ThemeMode},
+    theme::{Theme, ThemeMode, ThemeRegistry},
 };
 
 use colors::PodiumColorsExt as _;
@@ -104,6 +84,15 @@ use dock::PodiumDock;
 use onboarding::{OnboardingEvent, OnboardingSheet};
 use panel::PanelPosition;
 use panels::{AgentsPanel, FilesPanel, HealthPanel, KnowledgePanel, ReviewPanel, TerminalPanel};
+
+// ---------------------------------------------------------------------------
+// Embedded theme
+// ---------------------------------------------------------------------------
+
+/// Gruvbox Dark theme — embedded at compile time from assets/themes/gruvbox-dark.json.
+/// Loaded into the ThemeRegistry at startup and applied directly via apply_config.
+/// Phase 10 adds additional themes and a theme selector in Settings.
+const GRUVBOX_DARK: &str = include_str!("../assets/themes/gruvbox-dark.json");
 
 // ---------------------------------------------------------------------------
 // Global actions
@@ -115,19 +104,6 @@ actions!(podium, [Quit, OpenOnboarding]);
 // First launch init
 // ---------------------------------------------------------------------------
 
-/// Create the Podium config directory and empty config files on first launch.
-///
-/// Called once at startup before the window opens. Silently no-ops if the
-/// directory and files already exist. Errors are logged to stderr but do not
-/// crash the app — a missing config file is handled gracefully at load time
-/// by returning empty defaults.
-///
-/// Files created if absent:
-/// - `<config_dir>/projects.toml`
-/// - `<config_dir>/kb_sources.toml`
-///
-/// `podium_state.toml` is not created here — it is written on first project
-/// unload, which is the natural point it first has meaningful content.
 fn first_launch_init() {
     let directory = config::podium_config_dir();
 
@@ -155,29 +131,13 @@ fn first_launch_init() {
 // PodiumApp — root view
 // ---------------------------------------------------------------------------
 
-/// Root view for the Podium application.
-///
-/// Owns the three docks (left, bottom, right) and the loaded config state.
-/// Panels are registered into their default docks in `new()` per ADR-028.
-///
-/// `projects_config` and `kb_sources_config` are loaded from disk in `new()`
-/// and kept in sync as projects are added, loaded, and removed.
-///
-/// `onboarding_sheet` holds the active `OnboardingSheet` entity while the
-/// onboarding flow is open. The subscription in `_onboarding_subscription`
-/// fires `OnboardingEvent::ProjectCreated` when Step 7 confirms. Both are
-/// cleared when the flow completes or is cancelled.
 struct PodiumApp {
     left_dock: Entity<PodiumDock>,
     bottom_dock: Entity<PodiumDock>,
     right_dock: Entity<PodiumDock>,
     projects_config: ProjectsConfig,
     kb_sources_config: KbSourcesConfig,
-    /// The live onboarding sheet entity. `None` when no onboarding is in progress.
     onboarding_sheet: Option<Entity<OnboardingSheet>>,
-    /// Subscription to `OnboardingEvent` from the active sheet.
-    /// Stored so it stays alive for the duration of the onboarding flow.
-    /// Dropping this field cancels the subscription.
     _onboarding_subscription: Option<Subscription>,
 }
 
@@ -187,8 +147,6 @@ impl PodiumApp {
         let bottom_dock = cx.new(|cx| PodiumDock::new(PanelPosition::Bottom, cx));
         let right_dock = cx.new(|cx| PodiumDock::new(PanelPosition::Right, cx));
 
-        // Left dock: Files (100), Agents (200), Knowledge (300), Review (400), Health (600)
-        // Priority order determines tab bar position — see ADR-028.
         left_dock.update(cx, |dock, cx| {
             dock.add_panel(cx.new(|cx| FilesPanel::new(cx)), cx);
             dock.add_panel(cx.new(|cx| AgentsPanel::new(cx)), cx);
@@ -197,15 +155,10 @@ impl PodiumApp {
             dock.add_panel(cx.new(|cx| HealthPanel::new(cx)), cx);
         });
 
-        // Bottom dock: Terminal (500) — wide horizontal tool, bottom placement per ADR-028.
         bottom_dock.update(cx, |dock, cx| {
             dock.add_panel(cx.new(|cx| TerminalPanel::new(cx)), cx);
         });
 
-        // Right dock: no panels registered yet (ADR-028).
-
-        // Load config from disk. first_launch_init() has already ensured the
-        // files exist, so these return empty defaults at worst.
         let projects_config = ProjectsConfig::load().unwrap_or_default();
         let kb_sources_config = KbSourcesConfig::load().unwrap_or_default();
 
@@ -220,32 +173,13 @@ impl PodiumApp {
         }
     }
 
-    // --- Onboarding ---------------------------------------------------------
-
-    /// Open the onboarding Sheet.
-    ///
-    /// Creates a new `OnboardingSheet` entity, opens the Sheet via
-    /// `window.open_sheet_at`, and subscribes to `OnboardingEvent::ProjectCreated`.
-    /// The subscription fires when Step 7 confirms — `PodiumApp` writes the
-    /// project to disk and loads it.
-    ///
-    /// The Sheet drives all navigation internally via `cx.listener`. This
-    /// method is called exactly once per onboarding flow — `open_sheet_at` is
-    /// not called again on navigation steps.
     fn open_onboarding(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        // OnboardingSheet::new requires &mut Window for InputState::new (blink
-        // cursor subscription). Capture window in the closure.
         let sheet_entity = cx.new(|cx| OnboardingSheet::new(window, cx));
 
-        // Subscribe to the ProjectCreated event before opening the Sheet so
-        // no event can be missed between creation and subscription.
         let subscription = cx.subscribe(
             &sheet_entity,
             |this, _sheet, event, cx| match event {
                 OnboardingEvent::ProjectCreated(entry) => {
-                    // Phase 2 step 15: write entry to projects.toml, create
-                    // .podium/ structure, load the new project.
-                    // For now: add to in-memory config and notify.
                     this.projects_config.add_project(entry.clone());
                     this.onboarding_sheet = None;
                     this._onboarding_subscription = None;
@@ -254,16 +188,10 @@ impl PodiumApp {
             },
         );
 
-        // Open the Sheet. The builder closure captures the entity and renders
-        // it each frame — the Sheet re-renders in place as navigation mutates
-        // the entity state. No repeated `open_sheet_at` calls on navigation.
         let sheet_entity_for_builder = sheet_entity.clone();
         window.open_sheet_at(Placement::Left, cx, move |sheet, _window, _cx| {
             sheet
                 .size(px(420.))
-                // Push Sheet below TitleBar + tab bar so both remain visible.
-                // TitleBar ≈ 36px + tab bar ≈ 37px = 73px total.
-                // Phase 2: replace with measured heights once layout API is available.
                 .margins(px(73.))
                 .resizable(false)
                 .overlay(true)
@@ -275,9 +203,6 @@ impl PodiumApp {
         self._onboarding_subscription = Some(subscription);
     }
 
-    // --- Panel toggling -----------------------------------------------------
-
-    /// Toggle the panel with `priority` in whichever dock owns it.
     fn toggle_panel_by_priority(&mut self, priority: u32, cx: &mut Context<Self>) {
         for dock_entity in [&self.left_dock, &self.bottom_dock, &self.right_dock] {
             let handled = dock_entity.update(cx, |dock, cx| {
@@ -305,12 +230,6 @@ impl PodiumApp {
         }
     }
 
-    // --- Content area -------------------------------------------------------
-
-    /// Render the center content area.
-    ///
-    /// - No projects → empty state with Add New Project button
-    /// - Projects exist → content placeholder (project loading wired in step 16)
     fn render_content_area(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = cx.podium_colors();
 
@@ -333,6 +252,7 @@ impl PodiumApp {
                 .child(
                     Button::new("add-project")
                         .label("Add New Project")
+                        .primary()
                         .on_click(cx.listener(|this, _event, window, cx| {
                             this.open_onboarding(window, cx);
                         })),
@@ -381,15 +301,9 @@ impl Render for PodiumApp {
         let bottom_open = self.bottom_dock.read(cx).is_open();
         let right_open = self.right_dock.read(cx).is_open();
 
-        let left_width = self.left_dock.read(cx)
-            .active_panel_size(cx)
-            .unwrap_or(px(280.));
-        let right_width = self.right_dock.read(cx)
-            .active_panel_size(cx)
-            .unwrap_or(px(280.));
-        let bottom_height = self.bottom_dock.read(cx)
-            .active_panel_size(cx)
-            .unwrap_or(px(240.));
+        let left_width = self.left_dock.read(cx).active_panel_size(cx).unwrap_or(px(280.));
+        let right_width = self.right_dock.read(cx).active_panel_size(cx).unwrap_or(px(280.));
+        let bottom_height = self.bottom_dock.read(cx).active_panel_size(cx).unwrap_or(px(240.));
 
         let left_dock = self.left_dock.clone();
         let bottom_dock = self.bottom_dock.clone();
@@ -402,7 +316,6 @@ impl Render for PodiumApp {
             .flex()
             .flex_col()
             .bg(colors.content_background)
-            // --- TitleBar ---------------------------------------------------
             .child(
                 TitleBar::new()
                     .bg(colors.title_bar_background)
@@ -428,8 +341,6 @@ impl Render for PodiumApp {
                                     .text_sm()
                                     .child("Podium"),
                             )
-                            // Project switcher placeholder.
-                            // Phase 2: replace with gpui-component Combobox.
                             .child(
                                 div()
                                     .px_2()
@@ -442,7 +353,6 @@ impl Render for PodiumApp {
                             ),
                     ),
             )
-            // --- Tab bar ----------------------------------------------------
             .child(
                 div()
                     .w_full()
@@ -474,7 +384,6 @@ impl Render for PodiumApp {
                             .child(tooltip)
                     })),
             )
-            // --- Content area -----------------------------------------------
             .child(
                 div()
                     .flex_1()
@@ -514,14 +423,12 @@ impl Render for PodiumApp {
                             .child(bottom_dock),
                     ),
             )
-            // --- StatusBar --------------------------------------------------
             .child(
                 StatusBar::new()
                     .bg(colors.title_bar_background)
                     .left("Podium")
                     .right("Phase 2"),
             )
-            // --- Overlay layers ---------------------------------------------
             .children(Root::render_dialog_layer(window, cx))
             .children(Root::render_sheet_layer(window, cx))
             .children(Root::render_notification_layer(window, cx))
@@ -538,23 +445,34 @@ fn main() {
     app.run(move |cx: &mut App| {
         first_launch_init();
 
+        // gpui_component::init registers the built-in default light/dark themes.
         gpui_component::init(cx);
 
-        {
-            let theme = Theme::global_mut(cx);
-            let mut colors = *ThemeColor::dark();
-            let popup_bg: gpui::Hsla = gpui::rgb(0x3c3836).into();
-            colors.popover = popup_bg;
-            theme.colors = colors;
-            theme.tokens.popover = popup_bg.into();
-            theme.mode = ThemeMode::Dark;
+        // Register Gruvbox Dark in the themes map.
+        if let Err(error) = ThemeRegistry::global_mut(cx).load_themes_from_str(GRUVBOX_DARK) {
+            eprintln!("podium: failed to load Gruvbox Dark theme: {}", error);
         }
+
+        // Apply Gruvbox Dark directly via apply_config.
+        //
+        // Theme::change(Dark) picks up theme.dark_theme, which is set from
+        // default_themes — not from load_themes_from_str. Calling apply_config
+        // directly bypasses that and applies exactly the theme we loaded.
+        let gruvbox_config = ThemeRegistry::global(cx)
+            .themes()
+            .get("Gruvbox Dark")
+            .cloned();
+
+        if let Some(config) = gruvbox_config {
+            Theme::global_mut(cx).apply_config(&config);
+        } else {
+            eprintln!("podium: Gruvbox Dark theme not found after load — using default dark");
+            Theme::change(ThemeMode::Dark, None, cx);
+        }
+
         cx.set_window_appearance(Some(WindowAppearance::Dark));
 
         cx.on_action(|_: &Quit, cx| cx.quit());
-
-        // OpenOnboarding global action — available for keyboard shortcuts and
-        // project switcher dropdown in a later Phase 2 step.
         cx.on_action(|_: &OpenOnboarding, _cx| {});
 
         cx.spawn(async move |cx| {

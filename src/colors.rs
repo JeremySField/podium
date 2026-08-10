@@ -1,22 +1,16 @@
 //! PodiumColors — Podium-specific semantic color tokens.
 //!
-//! gpui-component's `ThemeColor` provides a rich set of named tokens. After
-//! inspecting the `theme_color.rs` source, the following UI-element tokens
-//! are directly available and used here:
+//! All colors are driven by the active gpui-component theme, which is set to
+//! Gruvbox Dark at startup via `ThemeRegistry::load_themes_from_str` in
+//! `main.rs`. `PodiumColors` reads semantic tokens from `cx.theme()` and
+//! provides them under Podium-specific names to render code.
 //!
-//!   `title_bar`        — title bar background
-//!   `title_bar_border` — title bar bottom border
-//!   `tab_bar`          — tab bar row background
-//!   `status_bar`       — status bar background
-//!   `popover`          — dropdown / popup background (set in main.rs init)
+//! ## Single remaining constant
 //!
-//! `PodiumColors` reads these tokens from `cx.theme()` directly where they
-//! exist, and falls back to the single remaining hex constant (`TAB_BAR_BG`)
-//! only for the tab bar background, which `ThemeColor::dark()` initialises
-//! too dark by default for Podium's three-level visual hierarchy.
-//!
-//! It is the **single source of truth for all color decisions** in Podium
-//! render code. All render methods call `cx.podium_colors()`.
+//! `CONTENT_BG` (`#1d2021`) is the only color not driven by the theme file.
+//! It is the content area floor — intentionally darker than `theme.background`
+//! (`#32302f`, the Sheet surface) to create depth beneath all overlays and
+//! panels. The theme file drives everything else.
 //!
 //! ## Why not lift Zed's theme crate?
 //!
@@ -26,122 +20,73 @@
 //!
 //! ## Phase 10 upgrade path
 //!
-//! Phase 10 will add a JSON-driven theme system. `PodiumColors::from_cx`
-//! will then read from a `GlobalPodiumTheme` rather than the constants here.
-//! Call sites in render code do not change — only this file changes.
+//! Phase 10 adds additional theme choices (One Dark, Solarized, etc.) and a
+//! theme selector in Settings. The `CONTENT_BG` constant moves into the theme
+//! JSON as a custom field, or is derived as a darkened `background`. Call
+//! sites in render code do not change — only this file changes.
 
 use gpui::{App, Hsla, rgb};
 use gpui_component::ActiveTheme as _;
 
 // ---------------------------------------------------------------------------
-// Remaining hex constant
+// Content floor constant
 //
-// Gruvbox Dark bg1 (`#3c3836`) — used for the tab bar background.
+// Gruvbox bg0_hard (#1d2021) — the darkest surface in the hierarchy.
+// Sits below the Sheet background (#32302f) driven by theme.background.
 //
-// `ThemeColor::dark()` sets `tab_bar` to a near-black value that makes the
-// tab bar indistinguishable from the content area. Overriding it here to
-// Gruvbox bg1 creates the three-level visual hierarchy:
-//   TitleBar  (cx.theme().title_bar  ≈ #4c4642)  warm chrome
-//   TabBar    (TAB_BAR_BG            = #3c3836)  one step cooler
-//   Content   (cx.theme().background ≈ #282828)  darkest floor
-//
-// Phase 10: replace with a theme-driven value from GlobalPodiumTheme.
+// Phase 10: derive from theme file or compute as theme.background.darken(x).
 // ---------------------------------------------------------------------------
 
-/// Tab bar background override — Gruvbox Dark bg1 (`#3c3836`).
-const TAB_BAR_BG: u32 = 0x3c3836;
+/// Gruvbox Dark bg0_hard — main content area floor.
+const CONTENT_BG: u32 = 0x1d2021;
 
 // ---------------------------------------------------------------------------
 // PodiumColors
 // ---------------------------------------------------------------------------
 
-/// Podium-specific semantic color tokens, derived from the active
-/// gpui-component theme at render time.
+/// Podium-specific semantic color tokens, derived from the active theme.
 ///
-/// Construction is cheap — no allocation, no locking, just field reads and
-/// `Hsla` copies. Call `cx.podium_colors()` at the top of any render method.
-///
-/// # Usage
-///
-/// ```rust
-/// use crate::colors::PodiumColorsExt as _;
-///
-/// let colors = cx.podium_colors();
-/// TitleBar::new().bg(colors.title_bar_background)
-/// div().bg(colors.panel_background)
-/// ```
+/// Construction is cheap — no allocation, no locking, just field reads.
+/// Call `cx.podium_colors()` at the top of any render method that needs
+/// multiple color values.
 pub struct PodiumColors {
-    // --- Chrome -------------------------------------------------------------
-    /// Background for `TitleBar` and `StatusBar`.
-    ///
-    /// Reads `cx.theme().title_bar` — the dedicated title bar token confirmed
-    /// present in gpui-component's `ThemeColor` struct.
+    /// TitleBar and StatusBar background. Reads `theme.title_bar`.
     pub title_bar_background: Hsla,
-
-    // --- Content areas ------------------------------------------------------
-    /// Background for panel content areas (the interior of open docks).
-    ///
-    /// Mapped to `cx.theme().secondary` (Gruvbox bg2, `#504945`) — slightly
-    /// lighter than content so open docks have a subtle visual presence.
-    pub panel_background: Hsla,
-
-    /// Background for the main center content area (editor pane in later phases).
-    ///
-    /// Mapped to `cx.theme().background` (Gruvbox bg0, `#282828`) — the
-    /// darkest surface, the visual floor of the UI.
-    pub content_background: Hsla,
-
-    // --- Tab bar ------------------------------------------------------------
-    /// Background for the tab bar row between the TitleBar and content area.
-    ///
-    /// Uses `TAB_BAR_BG` (`#3c3836`) rather than `cx.theme().tab_bar` because
-    /// gpui-component's dark palette initialises `tab_bar` too dark — it
-    /// renders indistinguishable from the content background. The override
-    /// creates the visible three-level chrome → tab bar → content hierarchy.
-    pub tab_bar_background: Hsla,
-
-    /// Text color for the active (selected) tab label.
-    pub tab_active_foreground: Hsla,
-
-    /// Text color for inactive (unselected) tab labels.
-    pub tab_inactive_foreground: Hsla,
-
-    /// Color of the underline drawn beneath the active tab label.
-    pub tab_active_indicator: Hsla,
-
-    // --- Borders ------------------------------------------------------------
-    /// Border drawn on the inner edge of each open dock (facing the content area).
-    pub panel_border: Hsla,
-
-    /// Border drawn on the bottom edge of the tab bar row.
-    pub tab_bar_border: Hsla,
-
-    /// Border drawn on the bottom edge of the title bar.
-    ///
-    /// Reads `cx.theme().title_bar_border` — confirmed present in ThemeColor.
+    /// Title bar bottom border. Reads `theme.title_bar_border`.
     pub title_bar_border: Hsla,
+    /// Open dock interior background. Reads `theme.secondary`.
+    pub panel_background: Hsla,
+    /// Main content area floor. Darker than Sheet/overlay bg for depth.
+    pub content_background: Hsla,
+    /// Tab bar row background. Reads `theme.tab_bar`.
+    pub tab_bar_background: Hsla,
+    /// Active tab label text color. Reads `theme.foreground`.
+    pub tab_active_foreground: Hsla,
+    /// Inactive tab label text color. Reads `theme.muted_foreground`.
+    pub tab_inactive_foreground: Hsla,
+    /// Active tab underline indicator color. Reads `theme.primary`.
+    pub tab_active_indicator: Hsla,
+    /// Dock inner edge border. Reads `theme.border`.
+    pub panel_border: Hsla,
+    /// Tab bar bottom border. Reads `theme.border`.
+    pub tab_bar_border: Hsla,
 }
 
 impl PodiumColors {
     /// Derive `PodiumColors` from the active gpui-component theme.
     pub fn from_cx(cx: &App) -> Self {
         let theme = cx.theme();
-
         Self {
-            // Use the dedicated title_bar token — confirmed in ThemeColor source.
-            title_bar_background: theme.title_bar,
-            panel_background: theme.secondary,
-            content_background: theme.background,
-            // Override tab_bar: gpui-component's dark default is too dark.
-            // TAB_BAR_BG (#3c3836) sits visually between title_bar and background.
-            tab_bar_background: rgb(TAB_BAR_BG).into(),
-            tab_active_foreground: theme.foreground,
+            title_bar_background:    theme.title_bar,
+            title_bar_border:        theme.title_bar_border,
+            panel_background:        theme.secondary,
+            content_background:      rgb(CONTENT_BG).into(),
+            tab_bar_background:      theme.tab_bar,
+            tab_active_foreground:   theme.foreground,
             tab_inactive_foreground: theme.muted_foreground,
-            tab_active_indicator: theme.primary,
-            panel_border: theme.border,
-            tab_bar_border: theme.border,
-            // Use the dedicated title_bar_border token — confirmed in ThemeColor source.
-            title_bar_border: theme.title_bar_border,
+            tab_active_indicator:    theme.primary,
+            panel_border:            theme.border,
+            tab_bar_border:          theme.border,
         }
     }
 }
@@ -151,11 +96,7 @@ impl PodiumColors {
 // ---------------------------------------------------------------------------
 
 /// Extension trait adding `podium_colors()` to the GPUI app context.
-///
-/// Implemented on `App` so it is accessible from `&mut Context<T>` in render
-/// methods via `Deref` coercion.
 pub trait PodiumColorsExt {
-    /// Derive `PodiumColors` from the current theme state.
     fn podium_colors(&self) -> PodiumColors;
 }
 

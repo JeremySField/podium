@@ -30,7 +30,7 @@
 //! |------|----------|---------|
 //! | 1 — Folder     | Yes | Native folder picker, .git/.podium detection |
 //! | 2 — Identity   | Yes | Project name, validation |
-//! | 3 — Git        | No  | SSH/HTTPS auth, remote URL |
+//! | 3 — Git        | No  | SSH/HTTPS toggle, account input/dropdown, remote URL |
 //! | 4 — Agents     | No  | Agent roster |
 //! | 5 — KB Sources | No  | KB source connections |
 //! | 6 — Services   | No  | External service connections |
@@ -55,10 +55,14 @@ use gpui_component::{
     WindowExt as _,
     button::{Button, ButtonVariants as _},
     input::{Input, InputEvent, InputState},
+    searchable_list::SearchableVec,
+    select::{Select, SelectEvent, SelectState},
+    switch::Switch,
 };
 
 use crate::colors::PodiumColorsExt as _;
 use crate::config::ProjectEntry;
+use crate::ssh_config::parse_ssh_config_hosts;
 
 // ---------------------------------------------------------------------------
 // OnboardingEvent — the single outbound signal from OnboardingSheet
@@ -174,10 +178,13 @@ pub struct OnboardingState {
     // Step 3 — Git (skippable)
     /// Authentication method: `"https"` (default) or `"ssh"`.
     pub git_auth: String,
-    /// HTTPS: GitHub username. SSH: SSH config alias.
+    /// HTTPS: GitHub username. SSH: SSH config alias selected from dropdown.
     pub git_account: String,
     /// Remote URL — pre-filled from detection or editable.
     pub git_remote: String,
+    /// SSH aliases parsed from `~/.ssh/config` at sheet creation time.
+    /// Empty if the file is absent or contains no non-provider host entries.
+    pub ssh_aliases: Vec<String>,
 }
 
 impl OnboardingState {
@@ -194,6 +201,7 @@ impl OnboardingState {
             git_auth: "https".to_string(),
             git_account: String::new(),
             git_remote: String::new(),
+            ssh_aliases: Vec::new(),
         }
     }
 
@@ -227,22 +235,40 @@ impl Default for OnboardingState {
 ///
 /// ## Input entity ownership
 ///
-/// `name_input` is an `Entity<InputState>` owned by `OnboardingSheet`. It is
-/// created in `new()` alongside a subscription to `InputEvent::Change` that
-/// keeps `state.project_name` in sync. The subscription is stored in
-/// `_subscriptions` so it stays alive for the sheet's lifetime.
+/// Text inputs and the SSH select are GPUI entities owned by `OnboardingSheet`,
+/// created in `new()` with subscriptions that keep `OnboardingState` fields in
+/// sync. All subscriptions are stored in `_subscriptions` per Zed Standard
+/// Rule 8 — `Vec<Subscription>` field pattern.
 ///
-/// When Step 8 (folder picker) pre-fills `state.project_name`, the render
-/// path for Step 2 calls `input.set_value(...)` to push that value into the
-/// `InputState` so the widget displays it correctly. This is a one-way push
-/// from `OnboardingState` → `InputState` on render; the subscription handles
-/// the reverse direction (user types → `InputState` emits → `state.project_name`
-/// updates).
+/// ## Sync pattern
+///
+/// State flows in two directions:
+///
+/// - **User edits → state** (subscription): entity emits a change event →
+///   subscription fires → writes to the relevant `state` field → `cx.notify()`
+///
+/// - **State → widget** (imperative push): called when navigating into a step
+///   that has pre-filled data (e.g. folder name → project name, detected remote
+///   → remote URL). Uses `set_value` / `set_selected_index` which do NOT
+///   re-emit change events, so there is no subscription loop.
 pub struct OnboardingSheet {
     state: OnboardingState,
     focus_handle: FocusHandle,
-    /// `InputState` entity for the project name field (Step 2).
+
+    // Step 2 — Identity
+    /// `InputState` entity for the project name field.
     name_input: Entity<InputState>,
+
+    // Step 3 — Git
+    /// `InputState` entity for the GitHub username field (HTTPS path).
+    https_input: Entity<InputState>,
+    /// `SelectState` entity for the SSH alias dropdown (SSH path).
+    /// Populated from `~/.ssh/config` at sheet creation. Remains in memory
+    /// for the sheet lifetime regardless of which auth mode is active.
+    ssh_select: Entity<SelectState<SearchableVec<String>>>,
+    /// `InputState` entity for the remote URL field (both paths).
+    remote_input: Entity<InputState>,
+
     /// All subscriptions for this entity. Stored per Zed Standard Rule 8 —
     /// `Vec<Subscription>` field pattern; subscriptions deregister on drop.
     _subscriptions: Vec<Subscription>,
@@ -251,9 +277,19 @@ pub struct OnboardingSheet {
 impl OnboardingSheet {
     /// Create a new `OnboardingSheet` entity at Step 1.
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        // Create the project name InputState with single-line mode (default),
-        // placeholder text, and a validate closure that enforces the allowed
-        // character set: letters, numbers, spaces, hyphens, underscores only.
+        // --- Parse SSH aliases from ~/.ssh/config ---------------------------
+        //
+        // Done at creation so the select is populated before the user reaches
+        // Step 3. Failures are silent — an empty alias list triggers the
+        // fallback hint in render_step_git.
+        let ssh_aliases: Vec<String> = dirs::home_dir()
+            .map(|home| home.join(".ssh").join("config"))
+            .and_then(|path| std::fs::read_to_string(path).ok())
+            .map(|content| parse_ssh_config_hosts(&content).into_iter().collect())
+            .unwrap_or_default();
+
+        // --- Step 2: project name input -------------------------------------
+
         let name_input = cx.new(|cx| {
             InputState::new(window, cx)
                 .placeholder("e.g. ShowFlyer")
@@ -267,26 +303,86 @@ impl OnboardingSheet {
                 })
         });
 
-        // Subscribe to InputEvent::Change to keep state.project_name in sync.
-        // The subscription fires on every keystroke after validation passes.
         let name_subscription = cx.subscribe(
             &name_input,
             |this, input, event, cx| {
                 if matches!(event, InputEvent::Change) {
                     let new_name = input.read(cx).value().to_string();
                     this.state.project_name = new_name;
-                    // Clear any prior validation error once the user starts editing.
                     this.state.project_name_error = None;
                     cx.notify();
                 }
             },
         );
 
+        // --- Step 3: HTTPS username input -----------------------------------
+
+        let https_input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("GitHub username")
+        });
+
+        let https_subscription = cx.subscribe(
+            &https_input,
+            |this, input, event, cx| {
+                if matches!(event, InputEvent::Change) {
+                    this.state.git_account = input.read(cx).value().to_string();
+                    cx.notify();
+                }
+            },
+        );
+
+        // --- Step 3: SSH alias select ---------------------------------------
+
+        let ssh_items = SearchableVec::new(ssh_aliases.clone());
+        let ssh_select = cx.new(|cx| {
+            SelectState::new(ssh_items, None, window, cx)
+        });
+
+        // SelectEvent has only one variant (Confirm), so destructure directly
+        // with `let` rather than `if let` to avoid an irrefutable pattern warning.
+        let ssh_subscription = cx.subscribe(
+            &ssh_select,
+            |this, _select, event, cx| {
+                let SelectEvent::Confirm(value) = event;
+                this.state.git_account = value.clone().unwrap_or_default();
+                cx.notify();
+            },
+        );
+
+        // --- Step 3: remote URL input ---------------------------------------
+
+        let remote_input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("e.g. git@github.com:user/repo.git")
+        });
+
+        let remote_subscription = cx.subscribe(
+            &remote_input,
+            |this, input, event, cx| {
+                if matches!(event, InputEvent::Change) {
+                    this.state.git_remote = input.read(cx).value().to_string();
+                    cx.notify();
+                }
+            },
+        );
+
+        let mut state = OnboardingState::new();
+        state.ssh_aliases = ssh_aliases;
+
         Self {
-            state: OnboardingState::new(),
+            state,
             focus_handle: cx.focus_handle(),
             name_input,
-            _subscriptions: vec![name_subscription],
+            https_input,
+            ssh_select,
+            remote_input,
+            _subscriptions: vec![
+                name_subscription,
+                https_subscription,
+                ssh_subscription,
+                remote_subscription,
+            ],
         }
     }
 
@@ -311,10 +407,13 @@ impl OnboardingSheet {
         self.state.advance();
         cx.notify();
 
-        // If we just advanced into Step 2, sync the pre-filled name (from
-        // folder picker) into the InputState so the widget displays it.
+        // Sync pre-filled values into widget state when entering a step that
+        // may have data from a prior step.
         if self.state.step == OnboardingStep::Identity {
             self.sync_name_input_to_state(window, cx);
+        }
+        if self.state.step == OnboardingStep::Git {
+            self.sync_git_inputs_to_state(window, cx);
         }
     }
 
@@ -349,6 +448,33 @@ impl OnboardingSheet {
         let current_name = self.state.project_name.clone();
         self.name_input.update(cx, |input, cx| {
             input.set_value(current_name, window, cx);
+        });
+    }
+
+    /// Push pre-filled git values from `OnboardingState` into the Step 3 widgets.
+    ///
+    /// Called when navigating into Step 3. Pushes `state.detected_remote` (from
+    /// `.git/config` parsing in Step 1) into `remote_input`, and `state.git_account`
+    /// into `https_input` if already set. Neither `set_value` call emits a change
+    /// event, so no subscription loop can occur.
+    fn sync_git_inputs_to_state(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // Pre-fill remote URL from detection if state.git_remote is still empty.
+        // This handles the case where the user navigated past Step 3 and came back —
+        // we don't overwrite edits they may have made.
+        if self.state.git_remote.is_empty() {
+            if let Some(detected) = self.state.detected_remote.clone() {
+                self.state.git_remote = detected;
+            }
+        }
+
+        let remote_value = self.state.git_remote.clone();
+        self.remote_input.update(cx, |input, cx| {
+            input.set_value(remote_value, window, cx);
+        });
+
+        let account_value = self.state.git_account.clone();
+        self.https_input.update(cx, |input, cx| {
+            input.set_value(account_value, window, cx);
         });
     }
 
@@ -607,21 +733,142 @@ impl OnboardingSheet {
             )
     }
 
-    // --- Step card stubs — replaced in build order steps 10–14 --------------
+    // --- Step 3 — Git config (Phase 2 Step 10) ------------------------------
 
     fn render_step_git(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        // Phase 2 step 10: replace with SSH/HTTPS selector, account input, remote URL.
+        let use_ssh = self.state.git_auth == "ssh";
+        let has_ssh_aliases = !self.state.ssh_aliases.is_empty();
+
         div()
             .flex()
             .flex_col()
-            .gap_3()
+            .gap_4()
             .child(
                 div()
                     .text_sm()
                     .text_color(cx.theme().muted_foreground)
-                    .child("Configure git authentication for this project. (Optional)"),
+                    .child("Configure git authentication for this project."),
+            )
+            // --- Auth mode toggle -------------------------------------------
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child("Authentication method"),
+                    )
+                    .child(
+                        // Switch: off = HTTPS, on = SSH.
+                        // The label always shows the active mode so the state
+                        // is unambiguous regardless of switch position.
+                        Switch::new("git-auth-toggle")
+                            .checked(use_ssh)
+                            .label(if use_ssh { "SSH" } else { "HTTPS" })
+                            .on_click(cx.listener(|this, checked, _window, cx| {
+                                this.state.git_auth = if *checked {
+                                    "ssh".to_string()
+                                } else {
+                                    "https".to_string()
+                                };
+                                // Clear the account field when switching modes —
+                                // a GitHub username is not an SSH alias and vice versa.
+                                this.state.git_account = String::new();
+                                cx.notify();
+                            })),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground.opacity(0.6))
+                            .child("HTTPS uses a Personal Access Token. SSH uses a key from ~/.ssh/config."),
+                    ),
+            )
+            // --- HTTPS path: GitHub username --------------------------------
+            .when(!use_ssh, |this| {
+                this.child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_2()
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .child("GitHub account"),
+                        )
+                        .child(Input::new(&self.https_input).small())
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground.opacity(0.6))
+                                .child("Your GitHub username or organization name. Used to route the correct PAT."),
+                        ),
+                )
+            })
+            // --- SSH path: alias dropdown -----------------------------------
+            .when(use_ssh, |this| {
+                this.child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_2()
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .child("SSH alias"),
+                        )
+                        .child(
+                            Select::new(&self.ssh_select)
+                                .placeholder("Select an SSH alias…")
+                                .disabled(!has_ssh_aliases)
+                                .small(),
+                        )
+                        .when(!has_ssh_aliases, |this| {
+                            this.child(
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground.opacity(0.6))
+                                    .child("No SSH aliases found in ~/.ssh/config. Add a Host entry for each git account, then reopen onboarding."),
+                            )
+                        })
+                        .when(has_ssh_aliases, |this| {
+                            this.child(
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground.opacity(0.6))
+                                    .child("Choose the Host alias from ~/.ssh/config that corresponds to this project's git account."),
+                            )
+                        }),
+                )
+            })
+            // --- Remote URL (both paths) ------------------------------------
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child("Remote URL"),
+                    )
+                    .child(Input::new(&self.remote_input).small())
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground.opacity(0.6))
+                            .child("Pre-filled from .git/config if detected. Leave blank to set later."),
+                    ),
             )
     }
+
+    // --- Step card stubs — replaced in build order steps 11–14 --------------
 
     fn render_step_agents(&self, cx: &mut Context<Self>) -> impl IntoElement {
         // Phase 2 step 11: replace with agent roster builder.
@@ -714,6 +961,34 @@ impl OnboardingSheet {
                                 .text_sm()
                                 .text_color(cx.theme().foreground)
                                 .child(self.state.folder_path.clone().unwrap_or_default()),
+                        ),
+                )
+            })
+            .when(!self.state.git_remote.is_empty() || !self.state.git_account.is_empty(), |this| {
+                this.child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .child("Git"),
+                        )
+                        .child(
+                            div()
+                                .text_sm()
+                                .text_color(cx.theme().foreground)
+                                .child(format!(
+                                    "{} — {}",
+                                    self.state.git_auth,
+                                    if self.state.git_account.is_empty() {
+                                        "no account set".to_string()
+                                    } else {
+                                        self.state.git_account.clone()
+                                    }
+                                )),
                         ),
                 )
             })
