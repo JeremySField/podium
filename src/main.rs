@@ -40,6 +40,18 @@
 //! - `tab_bar`        — tab bar background
 //! - `overlay`        — modal overlay background
 //!
+//! ## Onboarding architecture
+//!
+//! `OnboardingSheet` is a proper GPUI entity that owns its own state and drives
+//! all navigation internally via `cx.listener`. `PodiumApp` creates the entity,
+//! opens the Sheet once, and subscribes to `OnboardingEvent::ProjectCreated`.
+//! No `Arc<dyn Fn>` callbacks — see `onboarding.rs` for the full pattern.
+//!
+//! The active sheet entity is held in `onboarding_sheet: Option<Entity<OnboardingSheet>>`.
+//! It is set when the Sheet opens and cleared by the subscription handler on
+//! project creation, or by the cancel path (Sheet close drops the entity ref
+//! when `PodiumApp` re-renders with no active sheet).
+//!
 //! ## Phase 1 complete — bugs fixed in Phase 2 start
 //!
 //! - `.relative()` added to dock render div (resize handle anchor fix)
@@ -65,19 +77,19 @@ mod state;
 mod watch;
 mod watch_error;
 
-use std::sync::Arc;
-
 use gpui::{
     App, AppContext as _, Context, Entity, InteractiveElement, IntoElement,
-    MouseButton, MouseDownEvent, ParentElement, Render, Styled,
+    MouseButton, MouseDownEvent, ParentElement, Render, Styled, Subscription,
     Window, WindowAppearance, WindowOptions, actions, div, px,
 };
 use gpui::prelude::FluentBuilder as _;
 use gpui_component::{
     ActiveTheme as _,
     IconName,
+    Placement,
     Root,
     Sizable as _,
+    StyledExt as _,
     TitleBar,
     WindowExt as _,
     button::{Button, ButtonVariants as _},
@@ -89,7 +101,7 @@ use gpui_component::{
 use colors::PodiumColorsExt as _;
 use config::{KbSourcesConfig, ProjectsConfig};
 use dock::PodiumDock;
-use onboarding::{OnboardingState, open_onboarding_sheet};
+use onboarding::{OnboardingEvent, OnboardingSheet};
 use panel::PanelPosition;
 use panels::{AgentsPanel, FilesPanel, HealthPanel, KnowledgePanel, ReviewPanel, TerminalPanel};
 
@@ -103,7 +115,7 @@ actions!(podium, [Quit, OpenOnboarding]);
 // First launch init
 // ---------------------------------------------------------------------------
 
-/// Create `%APPDATA%\podium\` and empty config files on first launch.
+/// Create the Podium config directory and empty config files on first launch.
 ///
 /// Called once at startup before the window opens. Silently no-ops if the
 /// directory and files already exist. Errors are logged to stderr but do not
@@ -111,30 +123,30 @@ actions!(podium, [Quit, OpenOnboarding]);
 /// by returning empty defaults.
 ///
 /// Files created if absent:
-/// - `%APPDATA%\podium\projects.toml`
-/// - `%APPDATA%\podium\kb_sources.toml`
+/// - `<config_dir>/projects.toml`
+/// - `<config_dir>/kb_sources.toml`
 ///
 /// `podium_state.toml` is not created here — it is written on first project
 /// unload, which is the natural point it first has meaningful content.
 fn first_launch_init() {
-    let dir = config::podium_config_dir();
+    let directory = config::podium_config_dir();
 
-    if let Err(e) = std::fs::create_dir_all(&dir) {
-        eprintln!("podium: failed to create config dir {}: {}", dir.display(), e);
+    if let Err(error) = std::fs::create_dir_all(&directory) {
+        eprintln!("podium: failed to create config dir {}: {}", directory.display(), error);
         return;
     }
 
     let projects_path = config::projects_toml_path();
     if !projects_path.exists() {
-        if let Err(e) = config::ProjectsConfig::default().save() {
-            eprintln!("podium: failed to write projects.toml: {}", e);
+        if let Err(error) = config::ProjectsConfig::default().save() {
+            eprintln!("podium: failed to write projects.toml: {}", error);
         }
     }
 
     let kb_sources_path = config::kb_sources_toml_path();
     if !kb_sources_path.exists() {
-        if let Err(e) = config::KbSourcesConfig::default().save() {
-            eprintln!("podium: failed to write kb_sources.toml: {}", e);
+        if let Err(error) = config::KbSourcesConfig::default().save() {
+            eprintln!("podium: failed to write kb_sources.toml: {}", error);
         }
     }
 }
@@ -151,16 +163,22 @@ fn first_launch_init() {
 /// `projects_config` and `kb_sources_config` are loaded from disk in `new()`
 /// and kept in sync as projects are added, loaded, and removed.
 ///
-/// `onboarding_state` is `Some` while the onboarding Sheet is open, `None`
-/// otherwise. It lives here because `Sheet` is a stateless `RenderOnce`
-/// element — step state must persist between renders on the parent entity.
+/// `onboarding_sheet` holds the active `OnboardingSheet` entity while the
+/// onboarding flow is open. The subscription in `_onboarding_subscription`
+/// fires `OnboardingEvent::ProjectCreated` when Step 7 confirms. Both are
+/// cleared when the flow completes or is cancelled.
 struct PodiumApp {
     left_dock: Entity<PodiumDock>,
     bottom_dock: Entity<PodiumDock>,
     right_dock: Entity<PodiumDock>,
     projects_config: ProjectsConfig,
     kb_sources_config: KbSourcesConfig,
-    onboarding_state: Option<OnboardingState>,
+    /// The live onboarding sheet entity. `None` when no onboarding is in progress.
+    onboarding_sheet: Option<Entity<OnboardingSheet>>,
+    /// Subscription to `OnboardingEvent` from the active sheet.
+    /// Stored so it stays alive for the duration of the onboarding flow.
+    /// Dropping this field cancels the subscription.
+    _onboarding_subscription: Option<Subscription>,
 }
 
 impl PodiumApp {
@@ -179,8 +197,7 @@ impl PodiumApp {
             dock.add_panel(cx.new(|cx| HealthPanel::new(cx)), cx);
         });
 
-        // Bottom dock: Terminal (500) — wide horizontal tool, bottom placement
-        // per ADR-028.
+        // Bottom dock: Terminal (500) — wide horizontal tool, bottom placement per ADR-028.
         bottom_dock.update(cx, |dock, cx| {
             dock.add_panel(cx.new(|cx| TerminalPanel::new(cx)), cx);
         });
@@ -198,106 +215,62 @@ impl PodiumApp {
             right_dock,
             projects_config,
             kb_sources_config,
-            onboarding_state: None,
+            onboarding_sheet: None,
+            _onboarding_subscription: None,
         }
     }
 
     // --- Onboarding ---------------------------------------------------------
 
-    /// Open the onboarding Sheet with a fresh `OnboardingState`.
+    /// Open the onboarding Sheet.
     ///
-    /// Called directly from the "Add New Project" button via `cx.listener`.
+    /// Creates a new `OnboardingSheet` entity, opens the Sheet via
+    /// `window.open_sheet_at`, and subscribes to `OnboardingEvent::ProjectCreated`.
+    /// The subscription fires when Step 7 confirms — `PodiumApp` writes the
+    /// project to disk and loads it.
+    ///
+    /// The Sheet drives all navigation internally via `cx.listener`. This
+    /// method is called exactly once per onboarding flow — `open_sheet_at` is
+    /// not called again on navigation steps.
     fn open_onboarding(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.onboarding_state = Some(OnboardingState::new());
-        cx.notify();
-        self.open_onboarding_sheet_with_current_state(window, cx);
-    }
+        let sheet_entity = cx.new(OnboardingSheet::new);
 
-    /// Re-open the Sheet with the current `onboarding_state`.
-    ///
-    /// Called after any navigation action mutates the state. Closures are
-    /// wrapped in `Arc::new(...)` to satisfy the `Callback` type required by
-    /// `open_onboarding_sheet` (`Arc<dyn Fn(&mut Window, &mut App) + 'static>`).
-    fn open_onboarding_sheet_with_current_state(
-        &mut self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let state = match &self.onboarding_state {
-            Some(s) => s.clone(),
-            None => return,
-        };
-
-        let entity = cx.entity();
-
-        open_onboarding_sheet(
-            &state,
-            window,
-            cx,
-            // on_next
-            Arc::new({
-                let entity = entity.clone();
-                move |window: &mut Window, cx: &mut App| {
-                    entity.update(cx, |this, cx| {
-                        if let Some(s) = &mut this.onboarding_state {
-                            s.advance();
-                        }
-                        cx.notify();
-                        this.open_onboarding_sheet_with_current_state(window, cx);
-                    });
+        // Subscribe to the ProjectCreated event before opening the Sheet so
+        // no event can be missed between creation and subscription.
+        let subscription = cx.subscribe(
+            &sheet_entity,
+            |this, _sheet, event, cx| match event {
+                OnboardingEvent::ProjectCreated(entry) => {
+                    // Phase 2 step 15: write entry to projects.toml, create
+                    // .podium/ structure, load the new project.
+                    // For now: add to in-memory config and notify.
+                    this.projects_config.add_project(entry.clone());
+                    this.onboarding_sheet = None;
+                    this._onboarding_subscription = None;
+                    cx.notify();
                 }
-            }),
-            // on_back
-            Arc::new({
-                let entity = entity.clone();
-                move |window: &mut Window, cx: &mut App| {
-                    entity.update(cx, |this, cx| {
-                        if let Some(s) = &mut this.onboarding_state {
-                            s.go_back();
-                        }
-                        cx.notify();
-                        this.open_onboarding_sheet_with_current_state(window, cx);
-                    });
-                }
-            }),
-            // on_skip — same as next: advances past the optional step
-            Arc::new({
-                let entity = entity.clone();
-                move |window: &mut Window, cx: &mut App| {
-                    entity.update(cx, |this, cx| {
-                        if let Some(s) = &mut this.onboarding_state {
-                            s.advance();
-                        }
-                        cx.notify();
-                        this.open_onboarding_sheet_with_current_state(window, cx);
-                    });
-                }
-            }),
-            // on_cancel — clear state and close the Sheet
-            Arc::new({
-                let entity = entity.clone();
-                move |window: &mut Window, cx: &mut App| {
-                    entity.update(cx, |this, cx| {
-                        this.onboarding_state = None;
-                        cx.notify();
-                    });
-                    window.close_sheet(cx);
-                }
-            }),
-            // on_confirm — project creation stub (wired in step 15)
-            Arc::new({
-                let entity = entity.clone();
-                move |window: &mut Window, cx: &mut App| {
-                    entity.update(cx, |this, cx| {
-                        // Phase 2 step 15: create project from onboarding_state,
-                        // write projects.toml, create .podium/ structure.
-                        this.onboarding_state = None;
-                        cx.notify();
-                    });
-                    window.close_sheet(cx);
-                }
-            }),
+            },
         );
+
+        // Open the Sheet. The builder closure captures the entity and renders
+        // it each frame — the Sheet re-renders in place as navigation mutates
+        // the entity state. No repeated `open_sheet_at` calls on navigation.
+        let sheet_entity_for_builder = sheet_entity.clone();
+        window.open_sheet_at(Placement::Left, cx, move |sheet, _window, _cx| {
+            sheet
+                .size(px(420.))
+                // Push Sheet below TitleBar + tab bar so both remain visible.
+                // TitleBar ≈ 36px + tab bar ≈ 37px = 73px total.
+                // Phase 2: replace with measured heights once layout API is available.
+                .margins(px(73.))
+                .resizable(false)
+                .overlay(true)
+                .overlay_closable(false)
+                .child(sheet_entity_for_builder.clone())
+        });
+
+        self.onboarding_sheet = Some(sheet_entity);
+        self._onboarding_subscription = Some(subscription);
     }
 
     // --- Panel toggling -----------------------------------------------------
@@ -309,7 +282,7 @@ impl PodiumApp {
                 let index = dock
                     .panels()
                     .enumerate()
-                    .find(|(_, p)| p.activation_priority(cx) == priority)
+                    .find(|(_, panel)| panel.activation_priority(cx) == priority)
                     .map(|(i, _)| i);
 
                 let Some(index) = index else { return false; };
@@ -392,10 +365,10 @@ impl Render for PodiumApp {
         for dock_entity in [&self.left_dock, &self.bottom_dock, &self.right_dock] {
             let dock = dock_entity.read(cx);
             let active_idx = if dock.is_open() { dock.active_panel_index() } else { None };
-            dock.panels().enumerate().for_each(|(i, p)| {
+            dock.panels().enumerate().for_each(|(i, panel)| {
                 tab_info.push((
-                    p.activation_priority(cx),
-                    p.icon_tooltip(cx),
+                    panel.activation_priority(cx),
+                    panel.icon_tooltip(cx),
                     active_idx == Some(i),
                 ));
             });
@@ -578,9 +551,8 @@ fn main() {
 
         cx.on_action(|_: &Quit, cx| cx.quit());
 
-        // OpenOnboarding action — stub for now. The button uses cx.listener
-        // directly (build step 7 decision). Will be used by the project
-        // switcher dropdown and keyboard shortcuts in a later step.
+        // OpenOnboarding global action — available for keyboard shortcuts and
+        // project switcher dropdown in a later Phase 2 step.
         cx.on_action(|_: &OpenOnboarding, _cx| {});
 
         cx.spawn(async move |cx| {
