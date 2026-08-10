@@ -38,6 +38,23 @@
 //!
 //! Steps 1 and 2 are required. Steps 3–6 are skippable. Step 7 has no Skip.
 //!
+//! ## Step 4 — Dynamic agent list architecture
+//!
+//! Each agent card owns four GPUI entities: name `InputState`, purpose
+//! `InputState`, provider `SelectState`, and model `SelectState`. These live
+//! in `OnboardingSheet::agent_inputs: Vec<AgentInputState>` — a plain vec of
+//! plain structs. Subscriptions for agent `i` are stored in
+//! `agent_subscriptions[i]: Vec<Subscription>`.
+//!
+//! Add: push to both vecs. Remove at `i`: `remove(i)` on both — entity
+//! handles and subscriptions drop atomically.
+//!
+//! Provider subscription uses `cx.subscribe_in` (confirmed from
+//! `gpui/src/app/context.rs`) which delivers `&mut Window` to the callback,
+//! allowing `set_items` and `set_selected_index` to be called directly from
+//! the stored subscription. Name, purpose, and model subscriptions use plain
+//! `cx.subscribe` — they need only `cx`.
+//!
 //! ## ADRs
 //!
 //! - ADR-019: Sheet over Dialog for onboarding
@@ -76,6 +93,29 @@ use crate::ssh_config::parse_ssh_config_hosts;
 pub enum OnboardingEvent {
     /// Step 7 confirmed — project entry is ready for persistence and load.
     ProjectCreated(ProjectEntry),
+}
+
+// ---------------------------------------------------------------------------
+// AgentDraft — in-progress agent entry during onboarding
+// ---------------------------------------------------------------------------
+
+/// A partially-configured agent being built in Step 4.
+///
+/// Distinct from `AgentEntry` in `config.rs` — the onboarding form is
+/// incomplete until Step 7 confirm. `AgentDraft` carries only what the user
+/// fills in during Step 4. Remaining fields (id, kb_sources, endpoint) are
+/// filled or defaulted at project creation time.
+#[derive(Debug, Clone, Default)]
+pub struct AgentDraft {
+    /// Display name for this agent.
+    pub name: String,
+    /// Free-text description of what this agent does.
+    pub purpose: String,
+    /// Provider identifier: `"anthropic"`, `"openai"`, `"google"`, `"xai"`,
+    /// `"ollama"`, or `"custom"`.
+    pub provider: String,
+    /// Model identifier — provider-specific string.
+    pub model: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -185,6 +225,11 @@ pub struct OnboardingState {
     /// SSH aliases parsed from `~/.ssh/config` at sheet creation time.
     /// Empty if the file is absent or contains no non-provider host entries.
     pub ssh_aliases: Vec<String>,
+
+    // Step 4 — Agents (skippable)
+    /// Agent drafts being built in Step 4. Empty if the user skips.
+    /// Index matches `OnboardingSheet::agent_inputs`.
+    pub agents: Vec<AgentDraft>,
 }
 
 impl OnboardingState {
@@ -202,6 +247,7 @@ impl OnboardingState {
             git_account: String::new(),
             git_remote: String::new(),
             ssh_aliases: Vec::new(),
+            agents: Vec::new(),
         }
     }
 
@@ -227,6 +273,74 @@ impl Default for OnboardingState {
 }
 
 // ---------------------------------------------------------------------------
+// AgentInputState — widget state for one agent card
+// ---------------------------------------------------------------------------
+
+/// Widget entities for a single agent entry in Step 4.
+///
+/// A plain Rust struct — not a GPUI entity. Owns four GPUI entity handles.
+/// Dropping this struct releases all four handles; GPUI garbage-collects
+/// the entities on the next cycle.
+///
+/// Subscriptions for these entities are stored separately in
+/// `OnboardingSheet::agent_subscriptions[i]`. Removing agent `i` calls
+/// `remove(i)` on both `agent_inputs` and `agent_subscriptions`, atomically
+/// dropping the entities and deregistering the subscriptions.
+struct AgentInputState {
+    name_input:      Entity<InputState>,
+    purpose_input:   Entity<InputState>,
+    provider_select: Entity<SelectState<SearchableVec<String>>>,
+    model_select:    Entity<SelectState<SearchableVec<String>>>,
+}
+
+/// Returns the curated model list for a given provider identifier.
+///
+/// Called when creating a new agent card (to seed the model select) and when
+/// the provider changes (to replace the model list via `set_items`).
+fn models_for_provider(provider: &str) -> SearchableVec<String> {
+    match provider {
+        "anthropic" => SearchableVec::new(vec![
+            "claude-sonnet-4-6".to_string(),
+            "claude-opus-4-6".to_string(),
+            "claude-haiku-4-5".to_string(),
+        ]),
+        "openai" => SearchableVec::new(vec![
+            "gpt-4o".to_string(),
+            "gpt-4o-mini".to_string(),
+            "o3".to_string(),
+            "o4-mini".to_string(),
+        ]),
+        "google" => SearchableVec::new(vec![
+            "gemini-2.5-pro".to_string(),
+            "gemini-2.5-flash".to_string(),
+        ]),
+        "xai" => SearchableVec::new(vec![
+            "grok-3".to_string(),
+            "grok-3-mini".to_string(),
+        ]),
+        "ollama" => SearchableVec::new(vec![
+            "llama3.3".to_string(),
+            "mistral".to_string(),
+            "deepseek-r1".to_string(),
+        ]),
+        // Custom endpoint — no curated list; user types the model name.
+        _ => SearchableVec::new(vec![]),
+    }
+}
+
+/// Provider list shown in the provider dropdown for every agent card.
+fn provider_items() -> SearchableVec<String> {
+    SearchableVec::new(vec![
+        "anthropic".to_string(),
+        "openai".to_string(),
+        "google".to_string(),
+        "xai".to_string(),
+        "ollama".to_string(),
+        "custom".to_string(),
+    ])
+}
+
+// ---------------------------------------------------------------------------
 // OnboardingSheet — GPUI entity
 // ---------------------------------------------------------------------------
 
@@ -235,42 +349,50 @@ impl Default for OnboardingState {
 ///
 /// ## Input entity ownership
 ///
-/// Text inputs and the SSH select are GPUI entities owned by `OnboardingSheet`,
-/// created in `new()` with subscriptions that keep `OnboardingState` fields in
-/// sync. All subscriptions are stored in `_subscriptions` per Zed Standard
-/// Rule 8 — `Vec<Subscription>` field pattern.
+/// All GPUI widget entities are owned by `OnboardingSheet`. Static inputs
+/// (Steps 2 and 3) are created in `new()`. Dynamic inputs (Step 4 agents)
+/// are created in `handle_add_agent`.
+///
+/// All subscriptions follow Zed Standard Rule 8 — `Vec<Subscription>` field
+/// pattern. Static subscriptions live in `_subscriptions`. Per-agent
+/// subscriptions live in `agent_subscriptions[i]`.
 ///
 /// ## Sync pattern
 ///
-/// State flows in two directions:
+/// - **User edits → state** (subscription): entity emits → subscription
+///   fires → writes `state` field → `cx.notify()`
+/// - **State → widget** (imperative push): `set_value` / `set_selected_index`
+///   called when navigating into a pre-filled step. These do NOT re-emit
+///   change events, so no subscription loop occurs.
 ///
-/// - **User edits → state** (subscription): entity emits a change event →
-///   subscription fires → writes to the relevant `state` field → `cx.notify()`
+/// ## Provider / model coupling
 ///
-/// - **State → widget** (imperative push): called when navigating into a step
-///   that has pre-filled data (e.g. folder name → project name, detected remote
-///   → remote URL). Uses `set_value` / `set_selected_index` which do NOT
-///   re-emit change events, so there is no subscription loop.
+/// The provider subscription uses `cx.subscribe_in` (source-confirmed API
+/// from `gpui/src/app/context.rs`) which provides `&mut Window` in the
+/// callback. This allows `set_items` and `set_selected_index` to be called
+/// directly from the stored subscription, keeping all four agent subscriptions
+/// in the same place (`handle_add_agent`) with no render-time splits.
 pub struct OnboardingSheet {
     state: OnboardingState,
     focus_handle: FocusHandle,
 
     // Step 2 — Identity
-    /// `InputState` entity for the project name field.
     name_input: Entity<InputState>,
 
     // Step 3 — Git
-    /// `InputState` entity for the GitHub username field (HTTPS path).
-    https_input: Entity<InputState>,
-    /// `SelectState` entity for the SSH alias dropdown (SSH path).
-    /// Populated from `~/.ssh/config` at sheet creation. Remains in memory
-    /// for the sheet lifetime regardless of which auth mode is active.
-    ssh_select: Entity<SelectState<SearchableVec<String>>>,
-    /// `InputState` entity for the remote URL field (both paths).
+    https_input:  Entity<InputState>,
+    ssh_select:   Entity<SelectState<SearchableVec<String>>>,
     remote_input: Entity<InputState>,
 
-    /// All subscriptions for this entity. Stored per Zed Standard Rule 8 —
-    /// `Vec<Subscription>` field pattern; subscriptions deregister on drop.
+    // Step 4 — Agents (dynamic)
+    /// Widget entities for each agent card. Index matches `state.agents`.
+    agent_inputs: Vec<AgentInputState>,
+    /// Subscriptions for each agent's inputs. `agent_subscriptions[i]` holds
+    /// all four subscriptions for `agent_inputs[i]`. Dropping index `i`
+    /// deregisters those subscriptions atomically with the entity drop.
+    agent_subscriptions: Vec<Vec<Subscription>>,
+
+    /// Subscriptions for the static Step 2 and Step 3 entities.
     _subscriptions: Vec<Subscription>,
 }
 
@@ -278,10 +400,6 @@ impl OnboardingSheet {
     /// Create a new `OnboardingSheet` entity at Step 1.
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         // --- Parse SSH aliases from ~/.ssh/config ---------------------------
-        //
-        // Done at creation so the select is populated before the user reaches
-        // Step 3. Failures are silent — an empty alias list triggers the
-        // fallback hint in render_step_git.
         let ssh_aliases: Vec<String> = dirs::home_dir()
             .map(|home| home.join(".ssh").join("config"))
             .and_then(|path| std::fs::read_to_string(path).ok())
@@ -294,8 +412,6 @@ impl OnboardingSheet {
             InputState::new(window, cx)
                 .placeholder("e.g. ShowFlyer")
                 .validate(|text, _cx| {
-                    // Empty is allowed — the Next button guards against empty on Step 2.
-                    // Non-empty must match: letters, digits, spaces, hyphens, underscores.
                     text.is_empty()
                         || text
                             .chars()
@@ -318,8 +434,7 @@ impl OnboardingSheet {
         // --- Step 3: HTTPS username input -----------------------------------
 
         let https_input = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder("GitHub username")
+            InputState::new(window, cx).placeholder("GitHub username")
         });
 
         let https_subscription = cx.subscribe(
@@ -335,12 +450,8 @@ impl OnboardingSheet {
         // --- Step 3: SSH alias select ---------------------------------------
 
         let ssh_items = SearchableVec::new(ssh_aliases.clone());
-        let ssh_select = cx.new(|cx| {
-            SelectState::new(ssh_items, None, window, cx)
-        });
+        let ssh_select = cx.new(|cx| SelectState::new(ssh_items, None, window, cx));
 
-        // SelectEvent has only one variant (Confirm), so destructure directly
-        // with `let` rather than `if let` to avoid an irrefutable pattern warning.
         let ssh_subscription = cx.subscribe(
             &ssh_select,
             |this, _select, event, cx| {
@@ -377,6 +488,8 @@ impl OnboardingSheet {
             https_input,
             ssh_select,
             remote_input,
+            agent_inputs: Vec::new(),
+            agent_subscriptions: Vec::new(),
             _subscriptions: vec![
                 name_subscription,
                 https_subscription,
@@ -386,7 +499,7 @@ impl OnboardingSheet {
         }
     }
 
-    // --- Navigation handlers (bound via cx.listener in render) --------------
+    // --- Navigation handlers ------------------------------------------------
 
     fn handle_next(
         &mut self,
@@ -394,7 +507,6 @@ impl OnboardingSheet {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // Step 2 guard: require a non-empty, valid project name before advancing.
         if self.state.step == OnboardingStep::Identity {
             if self.state.project_name.trim().is_empty() {
                 self.state.project_name_error =
@@ -407,8 +519,6 @@ impl OnboardingSheet {
         self.state.advance();
         cx.notify();
 
-        // Sync pre-filled values into widget state when entering a step that
-        // may have data from a prior step.
         if self.state.step == OnboardingStep::Identity {
             self.sync_name_input_to_state(window, cx);
         }
@@ -433,17 +543,10 @@ impl OnboardingSheet {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // Skip advances past the current optional step — same as Next.
         self.state.advance();
         cx.notify();
     }
 
-    /// Push `state.project_name` into the `name_input` InputState.
-    ///
-    /// Called when navigating into Step 2 so that a name pre-filled by the
-    /// folder picker (Step 1) is displayed in the Input widget. `set_value`
-    /// does not emit `InputEvent::Change`, so this does not re-trigger the
-    /// subscription and cause a loop.
     fn sync_name_input_to_state(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let current_name = self.state.project_name.clone();
         self.name_input.update(cx, |input, cx| {
@@ -451,16 +554,7 @@ impl OnboardingSheet {
         });
     }
 
-    /// Push pre-filled git values from `OnboardingState` into the Step 3 widgets.
-    ///
-    /// Called when navigating into Step 3. Pushes `state.detected_remote` (from
-    /// `.git/config` parsing in Step 1) into `remote_input`, and `state.git_account`
-    /// into `https_input` if already set. Neither `set_value` call emits a change
-    /// event, so no subscription loop can occur.
     fn sync_git_inputs_to_state(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        // Pre-fill remote URL from detection if state.git_remote is still empty.
-        // This handles the case where the user navigated past Step 3 and came back —
-        // we don't overwrite edits they may have made.
         if self.state.git_remote.is_empty() {
             if let Some(detected) = self.state.detected_remote.clone() {
                 self.state.git_remote = detected;
@@ -478,26 +572,136 @@ impl OnboardingSheet {
         });
     }
 
+    // --- Step 4: agent add / remove -----------------------------------------
+
+    /// Append a blank agent card to the list.
+    ///
+    /// Creates four GPUI entities and four subscriptions, pushing them onto
+    /// their respective vecs at the same index. All subscription logic lives
+    /// here — no render-time splits.
+    ///
+    /// Provider uses `cx.subscribe_in` to get `&mut Window` in the callback,
+    /// which is required by `SelectState::set_items` and
+    /// `SelectState::set_selected_index`. Confirmed API from
+    /// `gpui/src/app/context.rs` at the Zed git checkout used by this project.
+    fn handle_add_agent(
+        &mut self,
+        _: &gpui::ClickEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let index = self.state.agents.len();
+        self.state.agents.push(AgentDraft::default());
+
+        // --- name input ---
+        let name_input = cx.new(|cx| {
+            InputState::new(window, cx).placeholder("e.g. Research Agent")
+        });
+        let name_sub = cx.subscribe(&name_input, move |this, input, event, cx| {
+            if matches!(event, InputEvent::Change) {
+                if let Some(draft) = this.state.agents.get_mut(index) {
+                    draft.name = input.read(cx).value().to_string();
+                }
+                cx.notify();
+            }
+        });
+
+        // --- purpose input ---
+        let purpose_input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("e.g. Finds and synthesizes external sources")
+        });
+        let purpose_sub = cx.subscribe(&purpose_input, move |this, input, event, cx| {
+            if matches!(event, InputEvent::Change) {
+                if let Some(draft) = this.state.agents.get_mut(index) {
+                    draft.purpose = input.read(cx).value().to_string();
+                }
+                cx.notify();
+            }
+        });
+
+        // --- provider select ------------------------------------------------
+        let provider_select = cx.new(|cx| {
+            SelectState::new(provider_items(), None, window, cx)
+        });
+
+        // --- model select — empty until provider chosen ---------------------
+        let model_select = cx.new(|cx| {
+            SelectState::new(SearchableVec::new(vec![]), None, window, cx)
+        });
+
+        // Provider subscription — uses subscribe_in for &mut Window access.
+        // On provider change:
+        //   1. Write provider to AgentDraft
+        //   2. Clear the previous model selection from AgentDraft
+        //   3. Swap model select items in place via set_items (needs Window)
+        //   4. Clear the model select's displayed selection (needs Window)
+        let model_select_handle = model_select.clone();
+        let provider_sub = cx.subscribe_in(
+            &provider_select,
+            window,
+            move |this, _select, event, window, cx| {
+                let SelectEvent::Confirm(value) = event;
+                let provider = value.clone().unwrap_or_default();
+
+                if let Some(draft) = this.state.agents.get_mut(index) {
+                    draft.provider = provider.clone();
+                    draft.model = String::new();
+                }
+
+                let new_models = models_for_provider(&provider);
+                model_select_handle.update(cx, |select, cx| {
+                    select.set_items(new_models, window, cx);
+                    select.set_selected_index(None, window, cx);
+                });
+
+                cx.notify();
+            },
+        );
+
+        // Model subscription — plain subscribe; set_items is not called here.
+        let model_sub = cx.subscribe(&model_select, move |this, _select, event, cx| {
+            let SelectEvent::Confirm(value) = event;
+            if let Some(draft) = this.state.agents.get_mut(index) {
+                draft.model = value.clone().unwrap_or_default();
+            }
+            cx.notify();
+        });
+
+        self.agent_inputs.push(AgentInputState {
+            name_input,
+            purpose_input,
+            provider_select,
+            model_select,
+        });
+        self.agent_subscriptions.push(vec![
+            name_sub,
+            purpose_sub,
+            provider_sub,
+            model_sub,
+        ]);
+
+        cx.notify();
+    }
+
+    /// Remove the agent card at `index`.
+    ///
+    /// `agent_inputs.remove(i)` drops the `AgentInputState` struct, releasing
+    /// all four entity handles. `agent_subscriptions.remove(i)` drops the
+    /// subscription vec, deregistering all four subscriptions. Both happen
+    /// atomically in a single method call.
+    fn handle_remove_agent(&mut self, index: usize, cx: &mut Context<Self>) {
+        if index >= self.state.agents.len() {
+            return;
+        }
+        self.state.agents.remove(index);
+        self.agent_inputs.remove(index);
+        self.agent_subscriptions.remove(index);
+        cx.notify();
+    }
+
     // --- Async folder picker ------------------------------------------------
 
-    /// Open the OS native folder picker and apply the result to state.
-    ///
-    /// Uses `window.spawn` to get an `AsyncWindowContext` after the await
-    /// point — the Zed standard pattern for async actions on GPUI entities.
-    /// A `WeakEntity` is captured so the async block does not hold a strong
-    /// reference across the await (Standing Rule 9 — Zed Standard).
-    ///
-    /// On folder selection:
-    /// - `state.folder_path` is set to the absolute path string
-    /// - `.git/` presence is detected → `state.git_detected`
-    /// - `.podium/` presence is detected → `state.podium_detected`
-    /// - If `.git/config` is present, the `url =` line under `[remote "origin"]`
-    ///   is parsed into `state.detected_remote`
-    /// - `state.project_name` is pre-filled from the last path component
-    ///   (only if the field is still empty — does not overwrite user edits)
-    /// - `cx.notify()` triggers re-render
-    ///
-    /// If the user dismisses the picker (`None` returned), state is unchanged.
     fn handle_browse(
         &mut self,
         _: &gpui::ClickEvent,
@@ -507,50 +711,35 @@ impl OnboardingSheet {
         let entity = cx.weak_entity();
         window.spawn(cx, async move |cx: &mut AsyncWindowContext| {
             let folder = rfd::AsyncFileDialog::new().pick_folder().await;
-
             let Some(folder) = folder else { return; };
 
             let path = folder.path().to_string_lossy().to_string();
-
-            // Perform all filesystem inspection synchronously — these are
-            // cheap metadata checks, not I/O-heavy operations.
             let folder_path = std::path::Path::new(&path);
             let git_detected = folder_path.join(".git").is_dir();
             let podium_detected = folder_path.join(".podium").is_dir();
-
-            // Parse the remote URL from .git/config if the repo is present.
-            // We look for the url = line under [remote "origin"]. If parsing
-            // fails for any reason we silently produce None — this is advisory
-            // data for pre-filling Step 3, not a required field.
             let detected_remote = if git_detected {
                 parse_git_remote_url(&folder_path.join(".git").join("config"))
             } else {
                 None
             };
-
-            // Pre-fill the project name from the last path component.
-            // Use to_string_lossy so non-UTF8 paths degrade gracefully.
             let folder_name = folder_path
                 .file_name()
                 .map(|name| name.to_string_lossy().into_owned())
                 .unwrap_or_default();
 
             cx.update(|_window, cx| {
-                entity
-                    .upgrade()
-                    .map(|sheet| {
-                        sheet.update(cx, |this, cx| {
-                            this.state.folder_path = Some(path);
-                            this.state.git_detected = git_detected;
-                            this.state.podium_detected = podium_detected;
-                            this.state.detected_remote = detected_remote;
-                            // Only pre-fill if the user has not already typed a name.
-                            if this.state.project_name.is_empty() {
-                                this.state.project_name = folder_name;
-                            }
-                            cx.notify();
-                        })
-                    });
+                entity.upgrade().map(|sheet| {
+                    sheet.update(cx, |this, cx| {
+                        this.state.folder_path = Some(path);
+                        this.state.git_detected = git_detected;
+                        this.state.podium_detected = podium_detected;
+                        this.state.detected_remote = detected_remote;
+                        if this.state.project_name.is_empty() {
+                            this.state.project_name = folder_name;
+                        }
+                        cx.notify();
+                    })
+                });
             })
             .ok();
         })
@@ -572,9 +761,8 @@ impl OnboardingSheet {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // Phase 2 step 15: build the full ProjectEntry from self.state.
-        // For now emit with a stub entry so the event pipeline is exercised.
-        // The stub is replaced when Step 7 confirm card is built.
+        // Phase 2 step 15: build full ProjectEntry from self.state.
+        // Stub replaced when Step 7 confirm card is built.
         let entry = ProjectEntry {
             id: uuid::Uuid::new_v4().to_string(),
             name: self.state.project_name.clone(),
@@ -609,7 +797,6 @@ impl OnboardingSheet {
         let path_display = self.state.folder_path
             .as_deref()
             .unwrap_or("No folder selected");
-
         let has_path = self.state.folder_path.is_some();
 
         div()
@@ -629,12 +816,8 @@ impl OnboardingSheet {
                     .border_1()
                     .border_color(cx.theme().border)
                     .text_sm()
-                    .when(!has_path, |this| {
-                        this.text_color(cx.theme().muted_foreground)
-                    })
-                    .when(has_path, |this| {
-                        this.text_color(cx.theme().foreground)
-                    })
+                    .when(!has_path, |this| this.text_color(cx.theme().muted_foreground))
+                    .when(has_path, |this| this.text_color(cx.theme().foreground))
                     .child(path_display.to_string()),
             )
             .when(has_path, |this| {
@@ -714,15 +897,9 @@ impl OnboardingSheet {
                 this.child(
                     div()
                         .text_xs()
-                        // danger_foreground is the confirmed text color for error states
-                        // at git HEAD 6d7847e — verified from theme_color.rs source.
+                        // danger_foreground confirmed from theme_color.rs at git HEAD 6d7847e.
                         .text_color(cx.theme().danger_foreground)
-                        .child(
-                            self.state
-                                .project_name_error
-                                .clone()
-                                .unwrap_or_default(),
-                        ),
+                        .child(self.state.project_name_error.clone().unwrap_or_default()),
                 )
             })
             .child(
@@ -749,7 +926,6 @@ impl OnboardingSheet {
                     .text_color(cx.theme().muted_foreground)
                     .child("Configure git authentication for this project."),
             )
-            // --- Auth mode toggle -------------------------------------------
             .child(
                 div()
                     .flex()
@@ -762,9 +938,6 @@ impl OnboardingSheet {
                             .child("Authentication method"),
                     )
                     .child(
-                        // Switch: off = HTTPS, on = SSH.
-                        // The label always shows the active mode so the state
-                        // is unambiguous regardless of switch position.
                         Switch::new("git-auth-toggle")
                             .checked(use_ssh)
                             .label(if use_ssh { "SSH" } else { "HTTPS" })
@@ -774,8 +947,6 @@ impl OnboardingSheet {
                                 } else {
                                     "https".to_string()
                                 };
-                                // Clear the account field when switching modes —
-                                // a GitHub username is not an SSH alias and vice versa.
                                 this.state.git_account = String::new();
                                 cx.notify();
                             })),
@@ -787,7 +958,6 @@ impl OnboardingSheet {
                             .child("HTTPS uses a Personal Access Token. SSH uses a key from ~/.ssh/config."),
                     ),
             )
-            // --- HTTPS path: GitHub username --------------------------------
             .when(!use_ssh, |this| {
                 this.child(
                     div()
@@ -809,7 +979,6 @@ impl OnboardingSheet {
                         ),
                 )
             })
-            // --- SSH path: alias dropdown -----------------------------------
             .when(use_ssh, |this| {
                 this.child(
                     div()
@@ -846,7 +1015,6 @@ impl OnboardingSheet {
                         }),
                 )
             })
-            // --- Remote URL (both paths) ------------------------------------
             .child(
                 div()
                     .flex()
@@ -868,10 +1036,11 @@ impl OnboardingSheet {
             )
     }
 
-    // --- Step card stubs — replaced in build order steps 11–14 --------------
+    // --- Step 4 — Agent config (Phase 2 Step 11) ----------------------------
 
     fn render_step_agents(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        // Phase 2 step 11: replace with agent roster builder.
+        let agent_count = self.agent_inputs.len();
+
         div()
             .flex()
             .flex_col()
@@ -880,9 +1049,123 @@ impl OnboardingSheet {
                 div()
                     .text_sm()
                     .text_color(cx.theme().muted_foreground)
-                    .child("Add AI agents to this project. (Optional)"),
+                    .child("Add AI agents to this project."),
+            )
+            // --- Agent cards ------------------------------------------------
+            .children((0..agent_count).map(|index| {
+                let widgets = &self.agent_inputs[index];
+                let has_provider = !self.state.agents[index].provider.is_empty();
+                let provider_has_models =
+                    !self.state.agents[index].provider.is_empty()
+                    && self.state.agents[index].provider != "custom";
+
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .p_3()
+                    .rounded_md()
+                    .border_1()
+                    .border_color(cx.theme().border)
+                    // Card header: number + remove button
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .justify_between()
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(format!("Agent {}", index + 1)),
+                            )
+                            .child(
+                                Button::new(("remove-agent", index))
+                                    .label("Remove")
+                                    .ghost()
+                                    .small()
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.handle_remove_agent(index, cx);
+                                    })),
+                            ),
+                    )
+                    // Name
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child("Name"),
+                    )
+                    .child(Input::new(&widgets.name_input).small())
+                    // Purpose
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child("Purpose"),
+                    )
+                    .child(Input::new(&widgets.purpose_input).small())
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground.opacity(0.6))
+                            .child("What does this agent do? Used to route work to the right agent."),
+                    )
+                    // Provider
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child("Provider"),
+                    )
+                    .child(
+                        Select::new(&widgets.provider_select)
+                            .placeholder("Select provider…")
+                            .small(),
+                    )
+                    // Model — shown only once a provider with a curated list is chosen
+                    .when(has_provider && provider_has_models, |this| {
+                        this
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child("Model"),
+                            )
+                            .child(
+                                Select::new(&widgets.model_select)
+                                    .placeholder("Select model…")
+                                    .small(),
+                            )
+                    })
+                    // Custom provider hint
+                    .when(has_provider && !provider_has_models, |this| {
+                        this.child(
+                            div()
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground.opacity(0.6))
+                                .child("Custom endpoint — model name configured after project creation."),
+                        )
+                    })
+            }))
+            // Add Agent button
+            .child(
+                Button::new("add-agent")
+                    .label("+ Add Agent")
+                    .outline()
+                    .small()
+                    .on_click(cx.listener(Self::handle_add_agent)),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground.opacity(0.6))
+                    .child("Agents can be added or removed at any time after project creation."),
             )
     }
+
+    // --- Step card stubs — replaced in build order steps 12–14 -------------
 
     fn render_step_kb_sources(&self, cx: &mut Context<Self>) -> impl IntoElement {
         // Phase 2 step 12: replace with KB source multi-select from global library.
@@ -988,6 +1271,30 @@ impl OnboardingSheet {
                                     } else {
                                         self.state.git_account.clone()
                                     }
+                                )),
+                        ),
+                )
+            })
+            .when(!self.state.agents.is_empty(), |this| {
+                this.child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .child("Agents"),
+                        )
+                        .child(
+                            div()
+                                .text_sm()
+                                .text_color(cx.theme().foreground)
+                                .child(format!(
+                                    "{} agent{}",
+                                    self.state.agents.len(),
+                                    if self.state.agents.len() == 1 { "" } else { "s" }
                                 )),
                         ),
                 )
@@ -1136,7 +1443,6 @@ impl Render for OnboardingSheet {
 /// is advisory pre-fill for Step 3, not a required field.
 fn parse_git_remote_url(git_config_path: &std::path::Path) -> Option<String> {
     let content = std::fs::read_to_string(git_config_path).ok()?;
-
     let mut in_origin_section = false;
 
     for line in content.lines() {
@@ -1147,7 +1453,6 @@ fn parse_git_remote_url(git_config_path: &std::path::Path) -> Option<String> {
             continue;
         }
 
-        // A new section header ends the origin block.
         if trimmed.starts_with('[') {
             in_origin_section = false;
             continue;
