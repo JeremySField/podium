@@ -17,7 +17,10 @@
 //! // let value = rx.recv().await.unwrap(); // → 1
 //! ```
 //!
-//! Lifted from Zed `crates/watch/src/watch.rs` (Apache 2.0).
+//! Lifted from Zed `crates/watch/src/watch.rs`.
+//! Copyright 2022 - 2025 Zed Industries, Inc.
+//! Licensed under the Apache License, Version 2.0.
+//!
 //! Changes from original:
 //! - `mod error` replaced with `use crate::watch_error::*` (flat Podium layout:
 //!   watch_error.rs is a crate-root sibling, not a submodule of watch)

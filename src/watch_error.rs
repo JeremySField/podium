@@ -1,6 +1,9 @@
 //! Error types for the Podium watch channel.
 //!
-//! Lifted from Zed `crates/watch/src/error.rs` (Apache 2.0) — no changes.
+//! Lifted from Zed `crates/watch/src/error.rs`.
+//! Copyright 2022 - 2025 Zed Industries, Inc.
+//! Licensed under the Apache License, Version 2.0.
+//! No changes from original.
 
 use std::fmt;
 

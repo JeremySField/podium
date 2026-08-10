@@ -79,7 +79,7 @@ use gpui_component::{
 
 use crate::colors::PodiumColorsExt as _;
 use crate::config::ProjectEntry;
-use crate::ssh_config::parse_ssh_config_hosts;
+use crate::ssh_hosts::parse_ssh_hosts;
 
 // ---------------------------------------------------------------------------
 // OnboardingEvent — the single outbound signal from OnboardingSheet
@@ -403,7 +403,7 @@ impl OnboardingSheet {
         let ssh_aliases: Vec<String> = dirs::home_dir()
             .map(|home| home.join(".ssh").join("config"))
             .and_then(|path| std::fs::read_to_string(path).ok())
-            .map(|content| parse_ssh_config_hosts(&content).into_iter().collect())
+            .map(|content| parse_ssh_hosts(&content).into_iter().collect())
             .unwrap_or_default();
 
         // --- Step 2: project name input -------------------------------------
@@ -574,16 +574,6 @@ impl OnboardingSheet {
 
     // --- Step 4: agent add / remove -----------------------------------------
 
-    /// Append a blank agent card to the list.
-    ///
-    /// Creates four GPUI entities and four subscriptions, pushing them onto
-    /// their respective vecs at the same index. All subscription logic lives
-    /// here — no render-time splits.
-    ///
-    /// Provider uses `cx.subscribe_in` to get `&mut Window` in the callback,
-    /// which is required by `SelectState::set_items` and
-    /// `SelectState::set_selected_index`. Confirmed API from
-    /// `gpui/src/app/context.rs` at the Zed git checkout used by this project.
     fn handle_add_agent(
         &mut self,
         _: &gpui::ClickEvent,
@@ -593,7 +583,6 @@ impl OnboardingSheet {
         let index = self.state.agents.len();
         self.state.agents.push(AgentDraft::default());
 
-        // --- name input ---
         let name_input = cx.new(|cx| {
             InputState::new(window, cx).placeholder("e.g. Research Agent")
         });
@@ -606,7 +595,6 @@ impl OnboardingSheet {
             }
         });
 
-        // --- purpose input ---
         let purpose_input = cx.new(|cx| {
             InputState::new(window, cx)
                 .placeholder("e.g. Finds and synthesizes external sources")
@@ -620,22 +608,14 @@ impl OnboardingSheet {
             }
         });
 
-        // --- provider select ------------------------------------------------
         let provider_select = cx.new(|cx| {
             SelectState::new(provider_items(), None, window, cx)
         });
 
-        // --- model select — empty until provider chosen ---------------------
         let model_select = cx.new(|cx| {
             SelectState::new(SearchableVec::new(vec![]), None, window, cx)
         });
 
-        // Provider subscription — uses subscribe_in for &mut Window access.
-        // On provider change:
-        //   1. Write provider to AgentDraft
-        //   2. Clear the previous model selection from AgentDraft
-        //   3. Swap model select items in place via set_items (needs Window)
-        //   4. Clear the model select's displayed selection (needs Window)
         let model_select_handle = model_select.clone();
         let provider_sub = cx.subscribe_in(
             &provider_select,
@@ -659,7 +639,6 @@ impl OnboardingSheet {
             },
         );
 
-        // Model subscription — plain subscribe; set_items is not called here.
         let model_sub = cx.subscribe(&model_select, move |this, _select, event, cx| {
             let SelectEvent::Confirm(value) = event;
             if let Some(draft) = this.state.agents.get_mut(index) {
@@ -684,12 +663,6 @@ impl OnboardingSheet {
         cx.notify();
     }
 
-    /// Remove the agent card at `index`.
-    ///
-    /// `agent_inputs.remove(i)` drops the `AgentInputState` struct, releasing
-    /// all four entity handles. `agent_subscriptions.remove(i)` drops the
-    /// subscription vec, deregistering all four subscriptions. Both happen
-    /// atomically in a single method call.
     fn handle_remove_agent(&mut self, index: usize, cx: &mut Context<Self>) {
         if index >= self.state.agents.len() {
             return;
@@ -761,8 +734,6 @@ impl OnboardingSheet {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // Phase 2 step 15: build full ProjectEntry from self.state.
-        // Stub replaced when Step 7 confirm card is built.
         let entry = ProjectEntry {
             id: uuid::Uuid::new_v4().to_string(),
             name: self.state.project_name.clone(),
@@ -897,7 +868,6 @@ impl OnboardingSheet {
                 this.child(
                     div()
                         .text_xs()
-                        // danger_foreground confirmed from theme_color.rs at git HEAD 6d7847e.
                         .text_color(cx.theme().danger_foreground)
                         .child(self.state.project_name_error.clone().unwrap_or_default()),
                 )
@@ -1051,7 +1021,6 @@ impl OnboardingSheet {
                     .text_color(cx.theme().muted_foreground)
                     .child("Add AI agents to this project."),
             )
-            // --- Agent cards ------------------------------------------------
             .children((0..agent_count).map(|index| {
                 let widgets = &self.agent_inputs[index];
                 let has_provider = !self.state.agents[index].provider.is_empty();
@@ -1067,7 +1036,6 @@ impl OnboardingSheet {
                     .rounded_md()
                     .border_1()
                     .border_color(cx.theme().border)
-                    // Card header: number + remove button
                     .child(
                         div()
                             .flex()
@@ -1090,7 +1058,6 @@ impl OnboardingSheet {
                                     })),
                             ),
                     )
-                    // Name
                     .child(
                         div()
                             .text_xs()
@@ -1098,7 +1065,6 @@ impl OnboardingSheet {
                             .child("Name"),
                     )
                     .child(Input::new(&widgets.name_input).small())
-                    // Purpose
                     .child(
                         div()
                             .text_xs()
@@ -1112,7 +1078,6 @@ impl OnboardingSheet {
                             .text_color(cx.theme().muted_foreground.opacity(0.6))
                             .child("What does this agent do? Used to route work to the right agent."),
                     )
-                    // Provider
                     .child(
                         div()
                             .text_xs()
@@ -1124,7 +1089,6 @@ impl OnboardingSheet {
                             .placeholder("Select provider…")
                             .small(),
                     )
-                    // Model — shown only once a provider with a curated list is chosen
                     .when(has_provider && provider_has_models, |this| {
                         this
                             .child(
@@ -1139,7 +1103,6 @@ impl OnboardingSheet {
                                     .small(),
                             )
                     })
-                    // Custom provider hint
                     .when(has_provider && !provider_has_models, |this| {
                         this.child(
                             div()
@@ -1149,7 +1112,6 @@ impl OnboardingSheet {
                         )
                     })
             }))
-            // Add Agent button
             .child(
                 Button::new("add-agent")
                     .label("+ Add Agent")
@@ -1168,7 +1130,6 @@ impl OnboardingSheet {
     // --- Step card stubs — replaced in build order steps 12–14 -------------
 
     fn render_step_kb_sources(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        // Phase 2 step 12: replace with KB source multi-select from global library.
         div()
             .flex()
             .flex_col()
@@ -1182,7 +1143,6 @@ impl OnboardingSheet {
     }
 
     fn render_step_services(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        // Phase 2 step 13: replace with service configuration cards.
         div()
             .flex()
             .flex_col()
@@ -1196,7 +1156,6 @@ impl OnboardingSheet {
     }
 
     fn render_step_confirm(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        // Phase 2 step 14: replace with full summary display.
         div()
             .flex()
             .flex_col()
@@ -1436,11 +1395,6 @@ impl Render for OnboardingSheet {
 // ---------------------------------------------------------------------------
 
 /// Parse the remote origin URL from a `.git/config` file.
-///
-/// Looks for the `url =` key under the `[remote "origin"]` section.
-/// Returns `None` if the file cannot be read, the section is absent,
-/// or the `url` line is malformed. All failures are silent — this data
-/// is advisory pre-fill for Step 3, not a required field.
 fn parse_git_remote_url(git_config_path: &std::path::Path) -> Option<String> {
     let content = std::fs::read_to_string(git_config_path).ok()?;
     let mut in_origin_section = false;

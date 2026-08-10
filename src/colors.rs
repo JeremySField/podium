@@ -12,12 +12,6 @@
 //! (`#32302f`, the Sheet surface) to create depth beneath all overlays and
 //! panels. The theme file drives everything else.
 //!
-//! ## Why not lift Zed's theme crate?
-//!
-//! Zed's `crates/theme/` is GPL-3.0-or-later. Podium is Apache-2.0. The
-//! GPL crate cannot be incorporated. `PodiumColors` independently implements
-//! the same *pattern* without copying any GPL code.
-//!
 //! ## Phase 10 upgrade path
 //!
 //! Phase 10 adds additional theme choices (One Dark, Solarized, etc.) and a

@@ -52,7 +52,7 @@ mod onboarding;
 mod panel;
 mod panel_handle;
 mod panels;
-mod ssh_config;
+mod ssh_hosts;
 mod state;
 mod watch;
 mod watch_error;
@@ -445,19 +445,12 @@ fn main() {
     app.run(move |cx: &mut App| {
         first_launch_init();
 
-        // gpui_component::init registers the built-in default light/dark themes.
         gpui_component::init(cx);
 
-        // Register Gruvbox Dark in the themes map.
         if let Err(error) = ThemeRegistry::global_mut(cx).load_themes_from_str(GRUVBOX_DARK) {
             eprintln!("podium: failed to load Gruvbox Dark theme: {}", error);
         }
 
-        // Apply Gruvbox Dark directly via apply_config.
-        //
-        // Theme::change(Dark) picks up theme.dark_theme, which is set from
-        // default_themes — not from load_themes_from_str. Calling apply_config
-        // directly bypasses that and applies exactly the theme we loaded.
         let gruvbox_config = ThemeRegistry::global(cx)
             .themes()
             .get("Gruvbox Dark")
