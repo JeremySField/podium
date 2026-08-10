@@ -2,6 +2,9 @@
 name = "podium"
 version = "0.1.0"
 edition = "2021"
+license = "Apache-2.0"
+description = "GPU-accelerated native desktop workspace for solo builders"
+repository = "https://github.com/JeremySField/podium"
 
 [dependencies]
 # --- Core GPUI stack (Phase 0) ---
@@ -18,7 +21,7 @@ toml = "0.8"
 serde = { version = "1.0", features = ["derive"] }
 
 # --- Phase 2: Zed watch channel lift ---
-# parking_lot: RwLock used by watch.rs (Zed lift)
+# parking_lot: RwLock used by watch.rs (Zed lift — Apache 2.0, Copyright 2022-2025 Zed Industries, Inc.)
 parking_lot = "0.12"
 
 # --- Phase 2: Native folder picker ---
