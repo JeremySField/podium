@@ -45,3 +45,12 @@ uuid = { version = "1", features = ["v4"] }
 # dirs: resolves platform config dir — %APPDATA% on Windows, ~/.config on Linux,
 # ~/Library/Application Support on macOS. Replaces APPDATA env var read.
 dirs = "6"
+
+# --- Phase 2 Step 12: KB source wing fetch ---
+# reqwest: HTTP client for querying MemPalace MCP-over-HTTP endpoint to fetch
+# available wings when a source with an endpoint is selected in Step 5.
+# json feature enables .json() request body and serde response deserialization.
+reqwest = { version = "0.12", features = ["json"], default-features = false }
+
+# serde_json: JSON serialization for MCP JSON-RPC call body and response parsing.
+serde_json = "1.0"
